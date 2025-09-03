@@ -102,7 +102,7 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
     def inject_fault(self, request, context):
         fault_command = request.fault_command
         fault_config = request.fault_config
-        stress_string = 'stress-ng {0} {1} --timeout 30'
+        stress_string = 'stress-ng {0} {1} --timeout 60'
         shell_command = stress_string.format(fault_command, fault_config)
         print("[x] Stress command to run: " + shell_command)
         self.fault_injection_start_times_ms.append(utils.current_milli_time())
