@@ -1,5 +1,5 @@
 from applications import sentiment_analysis, image_processing, speech_to_text, pocket_sphinx, aeneas, \
-    object_detection_darknet_cpu, object_detection_darknet_gpu, object_tracker
+    object_detection_darknet_cpu, object_detection_darknet_gpu, object_tracker, stateful_sentiment_aggregator
 from applications.image_classification import image_classification_alexnet_cpu, image_classification_alexnet_gpu, \
     image_classification_squeezenet_cpu, image_classification_squeezenet_gpu
 from utils import *
@@ -74,3 +74,8 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         object_tracker.enable_gpu()
         tracking_result = object_tracker.track_from_image(request, request_received_time_ms)
         return tracking_result
+
+    def sentiment_aggregation(self, request, context):
+        request_received_time_ms = current_milli_time()
+        response = satetful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
+        return response

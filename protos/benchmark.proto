@@ -16,6 +16,7 @@ service ApplicationBenchmarks{
   rpc aeneas(stream AudioTextRequest) returns (AudioTextResponse) {}
   rpc object_tracking(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc object_tracking_gpu(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
+  rpc sentiment_aggregation(SentimentAggregationRequest) returns (SentimentAggregationResponse) {}
 }
 
 service MicroBenchmarks{
@@ -242,6 +243,29 @@ message ObjectTrackingResponse{
   int64 response_time_ms = 3;
   int64 response_received_time_ms = 4;
   repeated DetectedTrackedObject tracked_objects = 5;
+}
+
+// ================================
+// Stateful Sentiment Aggregation
+// ================================
+
+message SentimentAggregationRequest {
+  string key = 1;              // topic, user, or session ID
+  string input_text = 2;       // raw text input
+  string req_id = 3;           // unique request identifier (UUID from orchestrator)
+  int64 request_time_ms = 4;   // client-side timestamp
+}
+
+message SentimentAggregationResponse {
+  string key = 1;
+  string req_id = 2;
+  double polarity = 3;         // aggregated polarity (-1 to +1)
+  double subjectivity = 4;     // aggregated subjectivity (0 to 1)
+  int64 state_version = 5;     // monotonic version counter
+  bool applied = 6;            // false if duplicate req_id was ignored
+  int64 request_time_ms = 7;   // original request time
+  int64 request_received_time_ms = 8;
+  int64 response_time_ms = 9;
 }
 
 /********************************************************
