@@ -266,6 +266,7 @@ message SentimentAggregationResponse {
   int64 request_time_ms = 7;   // original request time
   int64 request_received_time_ms = 8;
   int64 response_time_ms = 9;
+  int64 response_received_time_ms = 10;
 }
 
 /********************************************************
