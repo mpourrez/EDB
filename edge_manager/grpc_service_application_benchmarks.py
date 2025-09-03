@@ -77,5 +77,5 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
 
     def sentiment_aggregation(self, request, context):
         request_received_time_ms = current_milli_time()
-        response = satetful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
+        response = stateful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
         return response
