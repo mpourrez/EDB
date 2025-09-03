@@ -2,10 +2,18 @@ import threading
 import json
 import os
 import uuid
+import logging
 from collections import deque
 from textblob import TextBlob
 from utils import current_milli_time
 from protos import benchmark_pb2 as pb2
+
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 CHECKPOINT_FILE = "sentiment_state.json"
 WINDOW_SIZE = 50  # keep last 50 updates per key
@@ -14,10 +22,11 @@ WINDOW_SIZE = 50  # keep last 50 updates per key
 class SentimentAggregator:
     def __init__(self):
         self.lock = threading.RLock()
-        self.state = {}         # key -> {"window": deque, "polarity": float, "subjectivity": float}
+        self.state = {}  # key -> {window, polarity, subjectivity}
         self.version = 0
         self.last_op_id = ""
         self.seen_req_ids = set()
+        logging.info("SentimentAggregator initialized")
 
     def _score_text(self, text: str):
         blob = TextBlob(text)
@@ -34,12 +43,14 @@ class SentimentAggregator:
 
         with self.lock:
             if req_id in self.seen_req_ids:
-                # duplicate request, ignore
+                logging.warning(f"[{key}] Duplicate request {req_id}, ignored")
                 agg = self.state.get(key, {"polarity": 0, "subjectivity": 0})
                 return agg["polarity"], agg["subjectivity"], self.version, False
 
             polarity, subjectivity = self._score_text(text)
+
             if key not in self.state:
+                logging.info(f"[{key}] Creating new state entry")
                 self.state[key] = {
                     "window": deque(maxlen=WINDOW_SIZE),
                     "polarity": 0.0,
@@ -47,7 +58,6 @@ class SentimentAggregator:
                 }
 
             self.state[key]["window"].append((polarity, subjectivity))
-            # recompute averages
             w = self.state[key]["window"]
             avg_p = sum(p for p, _ in w) / len(w)
             avg_s = sum(s for _, s in w) / len(w)
@@ -58,6 +68,11 @@ class SentimentAggregator:
             self.version += 1
             self.last_op_id = req_id
             self.seen_req_ids.add(req_id)
+
+            logging.info(
+                f"[{key}] Update applied (req_id={req_id}): "
+                f"polarity={avg_p:.3f}, subjectivity={avg_s:.3f}, version={self.version}"
+            )
 
             return avg_p, avg_s, self.version, True
 
@@ -76,10 +91,12 @@ class SentimentAggregator:
             }
             with open(CHECKPOINT_FILE, "w") as f:
                 json.dump(snapshot, f)
+            logging.info(f"Checkpoint saved (version={self.version}, file={CHECKPOINT_FILE})")
             return snapshot
 
     def restore(self):
         if not os.path.exists(CHECKPOINT_FILE):
+            logging.info("No checkpoint found, starting fresh")
             return
         with open(CHECKPOINT_FILE, "r") as f:
             snapshot = json.load(f)
@@ -94,6 +111,7 @@ class SentimentAggregator:
                     "subjectivity": v["subjectivity"],
                     "window": dq
                 }
+        logging.info(f"State restored from checkpoint (version={self.version})")
 
 
 # Singleton instance
@@ -118,5 +136,10 @@ def analyze_sentiment_stateful(request, request_received_time_ms):
     response.request_time_ms = request.request_time_ms
     response.request_received_time_ms = request_received_time_ms
     response.response_time_ms = current_milli_time()
+
+    logging.info(
+        f"Response built: key={request.key}, version={version}, "
+        f"applied={applied}, latency={response.response_time_ms - request.request_time_ms} ms"
+    )
 
     return response
