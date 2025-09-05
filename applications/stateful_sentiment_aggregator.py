@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 import logging
+import time
 from collections import deque
 from textblob import TextBlob
 from utils import current_milli_time
@@ -17,6 +18,10 @@ logging.basicConfig(
 
 CHECKPOINT_FILE = "sentiment_state.json"
 WINDOW_SIZE = 50  # keep last 50 updates per key
+
+# Default checkpoint period (seconds)
+CHECKPOINT_PERIOD = 30
+CHECKPOINT_THREAD_STARTED = False
 
 
 class SentimentAggregator:
@@ -94,6 +99,11 @@ class SentimentAggregator:
             logging.info(f"Checkpoint saved (version={self.version}, file={CHECKPOINT_FILE})")
             return snapshot
 
+    def get_current_version(self, request, context):
+        version = aggregator.version
+        resp = pb2.VersionResponse(key=request.key, state_version=version)
+        return resp
+
     def restore(self):
         if not os.path.exists(CHECKPOINT_FILE):
             logging.info("No checkpoint found, starting fresh")
@@ -119,6 +129,35 @@ aggregator = SentimentAggregator()
 aggregator.restore()
 
 
+# --- Checkpoint management ---
+
+def checkpoint_loop():
+    """Background loop to save checkpoint periodically."""
+    global CHECKPOINT_PERIOD
+    while True:
+        time.sleep(CHECKPOINT_PERIOD)
+        aggregator.checkpoint()
+
+
+def start_checkpoint_thread():
+    """Start the checkpoint thread once."""
+    global CHECKPOINT_THREAD_STARTED
+    if not CHECKPOINT_THREAD_STARTED:
+        t = threading.Thread(target=checkpoint_loop, daemon=True)
+        t.start()
+        CHECKPOINT_THREAD_STARTED = True
+        logging.info(f"Checkpoint thread started (period={CHECKPOINT_PERIOD}s)")
+
+
+def set_checkpoint_period(seconds: int):
+    """Update checkpoint period dynamically."""
+    global CHECKPOINT_PERIOD
+    CHECKPOINT_PERIOD = seconds
+    logging.info(f"Checkpoint period updated to {seconds}s")
+
+
+# --- RPC handler for SA-AGG ---
+
 def analyze_sentiment_stateful(request, request_received_time_ms):
     polarity, subjectivity, version, applied = aggregator.update(
         key=request.key,
@@ -143,3 +182,7 @@ def analyze_sentiment_stateful(request, request_received_time_ms):
     )
 
     return response
+
+
+# Start background checkpointing when module is imported
+start_checkpoint_thread()

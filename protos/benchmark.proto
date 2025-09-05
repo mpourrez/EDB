@@ -17,6 +17,8 @@ service ApplicationBenchmarks{
   rpc object_tracking(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc object_tracking_gpu(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc sentiment_aggregation(SentimentAggregationRequest) returns (SentimentAggregationResponse) {}
+  rpc set_checkpoint_period(CheckpointConfig) returns (EmptyProto) {}
+  rpc get_current_version(VersionRequest) returns (VersionResponse) {}
 }
 
 service MicroBenchmarks{
@@ -267,6 +269,19 @@ message SentimentAggregationResponse {
   int64 request_received_time_ms = 8;
   int64 response_time_ms = 9;
   int64 response_received_time_ms = 10;
+}
+
+message CheckpointConfig {
+  int32 seconds = 1;
+}
+
+message VersionRequest {
+  string key = 1;
+}
+
+message VersionResponse {
+  string key = 1;
+  int64 state_version = 2;
 }
 
 /********************************************************

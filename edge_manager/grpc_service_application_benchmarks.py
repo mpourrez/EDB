@@ -79,3 +79,8 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         request_received_time_ms = current_milli_time()
         response = stateful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
         return response
+
+    def set_checkpoint_period(self, request, context):
+        stateful_sentiment_aggregator.set_checkpoint_period(request.seconds)
+        stateful_sentiment_aggregator.logging.info(f"[RPC] Checkpoint period set to {request.seconds}s")
+        return pb2.EmptyProto()

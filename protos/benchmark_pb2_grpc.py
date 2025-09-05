@@ -104,6 +104,16 @@ class ApplicationBenchmarksStub(object):
                 request_serializer=benchmark__pb2.SentimentAggregationRequest.SerializeToString,
                 response_deserializer=benchmark__pb2.SentimentAggregationResponse.FromString,
                 _registered_method=True)
+        self.set_checkpoint_period = channel.unary_unary(
+                '/protos.ApplicationBenchmarks/set_checkpoint_period',
+                request_serializer=benchmark__pb2.CheckpointConfig.SerializeToString,
+                response_deserializer=benchmark__pb2.EmptyProto.FromString,
+                _registered_method=True)
+        self.get_current_version = channel.unary_unary(
+                '/protos.ApplicationBenchmarks/get_current_version',
+                request_serializer=benchmark__pb2.VersionRequest.SerializeToString,
+                response_deserializer=benchmark__pb2.VersionResponse.FromString,
+                _registered_method=True)
 
 
 class ApplicationBenchmarksServicer(object):
@@ -193,6 +203,18 @@ class ApplicationBenchmarksServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def set_checkpoint_period(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def get_current_version(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ApplicationBenchmarksServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -265,6 +287,16 @@ def add_ApplicationBenchmarksServicer_to_server(servicer, server):
                     servicer.sentiment_aggregation,
                     request_deserializer=benchmark__pb2.SentimentAggregationRequest.FromString,
                     response_serializer=benchmark__pb2.SentimentAggregationResponse.SerializeToString,
+            ),
+            'set_checkpoint_period': grpc.unary_unary_rpc_method_handler(
+                    servicer.set_checkpoint_period,
+                    request_deserializer=benchmark__pb2.CheckpointConfig.FromString,
+                    response_serializer=benchmark__pb2.EmptyProto.SerializeToString,
+            ),
+            'get_current_version': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_current_version,
+                    request_deserializer=benchmark__pb2.VersionRequest.FromString,
+                    response_serializer=benchmark__pb2.VersionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -645,6 +677,60 @@ class ApplicationBenchmarks(object):
             '/protos.ApplicationBenchmarks/sentiment_aggregation',
             benchmark__pb2.SentimentAggregationRequest.SerializeToString,
             benchmark__pb2.SentimentAggregationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def set_checkpoint_period(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.ApplicationBenchmarks/set_checkpoint_period',
+            benchmark__pb2.CheckpointConfig.SerializeToString,
+            benchmark__pb2.EmptyProto.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def get_current_version(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.ApplicationBenchmarks/get_current_version',
+            benchmark__pb2.VersionRequest.SerializeToString,
+            benchmark__pb2.VersionResponse.FromString,
             options,
             channel_credentials,
             insecure,
