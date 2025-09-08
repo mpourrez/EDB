@@ -23,14 +23,17 @@ WINDOW_SIZE = 50  # keep last 50 updates per key
 CHECKPOINT_PERIOD = 30
 CHECKPOINT_THREAD_STARTED = False
 
+from collections import deque
+
+MAX_REQ_IDS = 5000  # keep only the last 5000 request IDs per key
 
 class SentimentAggregator:
     def __init__(self):
         self.lock = threading.RLock()
-        self.state = {}  # key -> {window, polarity, subjectivity}
+        self.state = {}        # key -> {window, polarity, subjectivity}
         self.version = 0
         self.last_op_id = ""
-        self.seen_req_ids = set()
+        self.req_history = {}  # key -> deque of recent request IDs
         logging.info("SentimentAggregator initialized")
 
     def _score_text(self, text: str):
@@ -47,13 +50,22 @@ class SentimentAggregator:
             req_id = str(uuid.uuid4())
 
         with self.lock:
-            if req_id in self.seen_req_ids:
+            # Initialize history for this key
+            if key not in self.req_history:
+                self.req_history[key] = deque(maxlen=MAX_REQ_IDS)
+
+            # Check for duplicate request IDs
+            if req_id in self.req_history[key]:
                 logging.warning(f"[{key}] Duplicate request {req_id}, ignored")
                 agg = self.state.get(key, {"polarity": 0, "subjectivity": 0})
                 return agg["polarity"], agg["subjectivity"], self.version, False
 
+            # Record the new req_id
+            self.req_history[key].append(req_id)
+
             polarity, subjectivity = self._score_text(text)
 
+            # Initialize state for this key if missing
             if key not in self.state:
                 logging.info(f"[{key}] Creating new state entry")
                 self.state[key] = {
@@ -62,6 +74,7 @@ class SentimentAggregator:
                     "subjectivity": 0.0
                 }
 
+            # Update sliding window and averages
             self.state[key]["window"].append((polarity, subjectivity))
             w = self.state[key]["window"]
             avg_p = sum(p for p, _ in w) / len(w)
@@ -69,10 +82,9 @@ class SentimentAggregator:
             self.state[key]["polarity"] = avg_p
             self.state[key]["subjectivity"] = avg_s
 
-            # update global version
+            # Update global version
             self.version += 1
             self.last_op_id = req_id
-            self.seen_req_ids.add(req_id)
 
             logging.info(
                 f"[{key}] Update applied (req_id={req_id}): "
@@ -80,48 +92,6 @@ class SentimentAggregator:
             )
 
             return avg_p, avg_s, self.version, True
-
-    def checkpoint(self):
-        with self.lock:
-            snapshot = {
-                "version": self.version,
-                "last_op_id": self.last_op_id,
-                "state": {
-                    k: {
-                        "polarity": v["polarity"],
-                        "subjectivity": v["subjectivity"],
-                        "window": list(v["window"])
-                    } for k, v in self.state.items()
-                }
-            }
-            with open(CHECKPOINT_FILE, "w") as f:
-                json.dump(snapshot, f)
-            logging.info(f"Checkpoint saved (version={self.version}, file={CHECKPOINT_FILE})")
-            return snapshot
-
-    def get_current_version(self, request, context):
-        version = aggregator.version
-        resp = pb2.VersionResponse(key=request.key, state_version=version)
-        return resp
-
-    def restore(self):
-        if not os.path.exists(CHECKPOINT_FILE):
-            logging.info("No checkpoint found, starting fresh")
-            return
-        with open(CHECKPOINT_FILE, "r") as f:
-            snapshot = json.load(f)
-        with self.lock:
-            self.version = snapshot.get("version", 0)
-            self.last_op_id = snapshot.get("last_op_id", "")
-            self.state = {}
-            for k, v in snapshot["state"].items():
-                dq = deque(v["window"], maxlen=WINDOW_SIZE)
-                self.state[k] = {
-                    "polarity": v["polarity"],
-                    "subjectivity": v["subjectivity"],
-                    "window": dq
-                }
-        logging.info(f"State restored from checkpoint (version={self.version})")
 
 
 # Singleton instance
