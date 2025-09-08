@@ -22,18 +22,18 @@ WINDOW_SIZE = 50  # keep last 50 updates per key
 # Default checkpoint period (seconds)
 CHECKPOINT_PERIOD = 30
 CHECKPOINT_THREAD_STARTED = False
-
 from collections import deque
 
 MAX_REQ_IDS = 5000  # keep only the last 5000 request IDs per key
 
+
 class SentimentAggregator:
     def __init__(self):
         self.lock = threading.RLock()
-        self.state = {}        # key -> {window, polarity, subjectivity}
+        self.state = {}  # key -> {window, polarity, subjectivity}
         self.version = 0
         self.last_op_id = ""
-        self.req_history = {}  # key -> deque of recent request IDs
+        self.seen_req_ids = set()
         logging.info("SentimentAggregator initialized")
 
     def _score_text(self, text: str):
@@ -92,6 +92,48 @@ class SentimentAggregator:
             )
 
             return avg_p, avg_s, self.version, True
+
+    def checkpoint(self):
+        with self.lock:
+            snapshot = {
+                "version": self.version,
+                "last_op_id": self.last_op_id,
+                "state": {
+                    k: {
+                        "polarity": v["polarity"],
+                        "subjectivity": v["subjectivity"],
+                        "window": list(v["window"])
+                    } for k, v in self.state.items()
+                }
+            }
+            with open(CHECKPOINT_FILE, "w") as f:
+                json.dump(snapshot, f)
+            logging.info(f"Checkpoint saved (version={self.version}, file={CHECKPOINT_FILE})")
+            return snapshot
+
+    def get_current_version(self, request, context):
+        version = aggregator.version
+        resp = pb2.VersionResponse(key=request.key, state_version=version)
+        return resp
+
+    def restore(self):
+        if not os.path.exists(CHECKPOINT_FILE):
+            logging.info("No checkpoint found, starting fresh")
+            return
+        with open(CHECKPOINT_FILE, "r") as f:
+            snapshot = json.load(f)
+        with self.lock:
+            self.version = snapshot.get("version", 0)
+            self.last_op_id = snapshot.get("last_op_id", "")
+            self.state = {}
+            for k, v in snapshot["state"].items():
+                dq = deque(v["window"], maxlen=WINDOW_SIZE)
+                self.state[k] = {
+                    "polarity": v["polarity"],
+                    "subjectivity": v["subjectivity"],
+                    "window": dq
+                }
+        logging.info(f"State restored from checkpoint (version={self.version})")
 
 
 # Singleton instance
