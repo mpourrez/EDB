@@ -25,6 +25,9 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
         self.utilization_output = None
         self.resource_tracing_process = None
 
+    def ping(self, request, context):
+        return pb2.EmptyProto()
+
     def start_resource_tracing(self, request, context):
         print("[x] Tracing resource utilization. ")
         # Start the resource utilization thread

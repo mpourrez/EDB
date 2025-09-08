@@ -1081,6 +1081,11 @@ class EdgeResourceManagementStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.ping = channel.unary_unary(
+                '/protos.EdgeResourceManagement/ping',
+                request_serializer=benchmark__pb2.EmptyProto.SerializeToString,
+                response_deserializer=benchmark__pb2.EmptyProto.FromString,
+                _registered_method=True)
         self.start_resource_tracing = channel.unary_unary(
                 '/protos.EdgeResourceManagement/start_resource_tracing',
                 request_serializer=benchmark__pb2.EmptyProto.SerializeToString,
@@ -1130,6 +1135,12 @@ class EdgeResourceManagementStub(object):
 
 class EdgeResourceManagementServicer(object):
     """Missing associated documentation comment in .proto file."""
+
+    def ping(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def start_resource_tracing(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -1188,6 +1199,11 @@ class EdgeResourceManagementServicer(object):
 
 def add_EdgeResourceManagementServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'ping': grpc.unary_unary_rpc_method_handler(
+                    servicer.ping,
+                    request_deserializer=benchmark__pb2.EmptyProto.FromString,
+                    response_serializer=benchmark__pb2.EmptyProto.SerializeToString,
+            ),
             'start_resource_tracing': grpc.unary_unary_rpc_method_handler(
                     servicer.start_resource_tracing,
                     request_deserializer=benchmark__pb2.EmptyProto.FromString,
@@ -1243,6 +1259,33 @@ def add_EdgeResourceManagementServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class EdgeResourceManagement(object):
     """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def ping(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.EdgeResourceManagement/ping',
+            benchmark__pb2.EmptyProto.SerializeToString,
+            benchmark__pb2.EmptyProto.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def start_resource_tracing(request,

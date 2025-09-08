@@ -32,6 +32,7 @@ service MicroBenchmarks{
 }
 
 service EdgeResourceManagement{
+  rpc ping(EmptyProto) returns (EmptyProto) {}
   rpc start_resource_tracing(EmptyProto) returns (EmptyProto) {}
   rpc start_resource_tracing_and_saving(ResourceTracingRequest) returns (EmptyProto) {}
   rpc get_resource_utilization(EmptyProto) returns (ResourceUtilizationResponse) {}
