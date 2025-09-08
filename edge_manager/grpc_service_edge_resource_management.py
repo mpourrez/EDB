@@ -244,43 +244,192 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
         return pb2.EmptyProto()
 
 
+import glob
+
+def _read_text(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+def _is_raspberry_pi():
+    # Most reliable: device-tree model string contains 'Raspberry Pi'
+    model = _read_text("/sys/firmware/devicetree/base/model") or _read_text("/proc/device-tree/model")
+    return bool(model and "raspberry pi" in model.lower())
+
+def _is_jetson():
+    model = _read_text("/sys/firmware/devicetree/base/model") or _read_text("/proc/device-tree/model")
+    if model and "jetson" in model.lower():
+        return True
+    # Fallback: tegrastats exists
+    return os.path.exists("/usr/bin/tegrastats") or os.path.exists("/bin/tegrastats")
+
+def _read_rpi_cpu_temp():
+    """
+    Returns CPU temp in °C using vcgencmd; None if unavailable.
+    """
+    try:
+        # vcgencmd typically resides in /usr/bin on Raspberry Pi OS
+        proc = subprocess.Popen(["/usr/bin/vcgencmd", "measure_temp"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, _ = proc.communicate(timeout=2)
+        # Example output: b"temp=53.2'C\n"
+        s = out.decode(errors="ignore").strip()
+        if "temp=" in s:
+            val = s.split("temp=")[1].split("'")[0]
+            return float(val), proc
+    except Exception:
+        pass
+    return None, None
+
+def _read_jetson_cpu_temp_from_sysfs():
+    """
+    Read CPU temperature from thermal zones on Jetson.
+    Returns (temp_c, None) or (None, None).
+    """
+    # Search thermal zones for CPU-like sensors
+    # Typical types: CPU-therm, Tdiode, GPU-therm, etc.
+    try:
+        for tz in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
+            ttype = _read_text(os.path.join(tz, "type"))
+            if not ttype:
+                continue
+            if "cpu" in ttype.lower() or ttype.lower() in {"cpu-therm", "cpu_therm"}:
+                tval = _read_text(os.path.join(tz, "temp"))
+                if tval and tval.isdigit():
+                    # millidegree C
+                    return (int(tval) / 1000.0, None)
+                # Some boards may expose raw °C as float/int
+                try:
+                    return (float(tval), None)
+                except Exception:
+                    pass
+        # Fallback: some Jetsons expose this file
+        alt = _read_text("/sys/devices/gpu.0/temp")
+        if alt:
+            try:
+                v = int(alt) / 1000.0 if alt.isdigit() else float(alt)
+                return (v, None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None, None
+
+def _read_jetson_cpu_temp_from_tegrastats():
+    """
+    Parse tegrastats one-shot output.
+    Returns (temp_c, proc_or_none).
+    """
+    try:
+        # Run once; tegrastats prints a line and keeps running, so use timeout+kill
+        proc = subprocess.Popen(["tegrastats", "--interval", "1000"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Read a single line with a short timeout
+        out = b""
+        start = time.time()
+        while time.time() - start < 2:
+            chunk = proc.stdout.readline()
+            if not chunk:
+                break
+            out += chunk
+            if b"\n" in chunk:
+                break
+        # Try to stop it cleanly
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        # Example snippet often contains: "CPU@52.5C GPU@... AO@..."
+        line = out.decode(errors="ignore")
+        for token in line.replace("@", " ").split():
+            if token.endswith("C"):
+                # Take first numeric preceding 'C' (likely CPU)
+                try:
+                    # tokens like 'CPU', '52.5C' -> we search numeric
+                    val = token[:-1]
+                    return (float(val), proc)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None, None
+
+
 class PowerMeasurementThread(threading.Thread):
+    """
+    Cross-device temperature sampler (Raspberry Pi & Jetson Nano).
+
+    API is kept identical to your original class for compatibility:
+      - get_temperatures() -> (timestamps_ms, temps_c)
+      - get_average_power() -> average temperature in °C
+      - get_power_process() -> last subprocess (may be None on sysfs path)
+    """
     def __init__(self, interval):
         super().__init__()
         self.interval = interval
         self.stop_flag = False
         self.power_timestamps = []
         self.power_data = []
-        self.power_process = None
+        self._last_proc = None
+
+        # Detect platform once
+        self._on_rpi = _is_raspberry_pi()
+        self._on_jetson = (not self._on_rpi) and _is_jetson()
 
     def run(self):
         while not self.stop_flag:
-            # Run vcgencmd to get power consumption data
-            command = "sudo vcgencmd measure_temp"
-            self.power_timestamps.append(utils.current_milli_time())
-            self.power_process = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            output, error = self.power_process.communicate()
+            ts = utils.current_milli_time()
+            temp_c = None
+            proc_ref = None
 
-            # Parse the output to extract the voltage and current values
-            temperature = float(output.decode().split("=")[1][:-3])
+            if self._on_rpi:
+                temp_c, proc_ref = _read_rpi_cpu_temp()
 
-            # Add the power consumption data to the list
-            self.power_data.append(temperature)
+            if temp_c is None and self._on_jetson:
+                temp_c, proc_ref = _read_jetson_cpu_temp_from_sysfs()
+                if temp_c is None:
+                    # fallback to tegrastats if sysfs missing/not readable
+                    temp_c, proc_ref = _read_jetson_cpu_temp_from_tegrastats()
 
-            # Wait for the measurement interval
+            if temp_c is None:
+                # Last-resort generic Linux hwmon sweep
+                try:
+                    # Look for any temp*_input under hwmon and pick the first sane value
+                    for p in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
+                        raw = _read_text(p)
+                        if raw and raw.isdigit():
+                            v = int(raw) / 1000.0
+                            if 0.0 < v < 120.0:
+                                temp_c = v
+                                break
+                except Exception:
+                    pass
+
+            if temp_c is not None:
+                self.power_timestamps.append(ts)
+                self.power_data.append(float(temp_c))
+            # keep track of last proc for get_power_process(); may be None
+            self._last_proc = proc_ref
+
             time.sleep(self.interval)
 
     def get_power_process(self):
-        return self.power_process
+        # May be None when reading from sysfs; callers should guard with try/except (your code already does).
+        return self._last_proc
 
     def stop(self):
         self.stop_flag = True
 
     def get_temperatures(self):
+        # Returns timestamps (ms) and temperatures (°C)
         return self.power_timestamps, self.power_data
 
     def get_average_power(self):
-        return sum(self.power_data) / len(self.power_data)
+        # Backwards-compatible name: returns average temperature in °C
+        return (sum(self.power_data) / len(self.power_data)) if self.power_data else 0.0
+
 
 
 class ResourceUtilizationThread(threading.Thread):
