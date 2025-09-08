@@ -193,4 +193,28 @@ def analyze_sentiment_stateful(request, request_received_time_ms):
 
 
 # Start background checkpointing when module is imported
-start_checkpoint_thread()
+# start_checkpoint_thread()
+# --- Checkpoint management (idempotent) ---
+
+_checkpoint_lock = threading.Lock()
+_checkpoint_thread = None
+_checkpoint_period = 30  # seconds
+
+def _checkpoint_loop():
+    while True:
+        time.sleep(_checkpoint_period)
+        aggregator.checkpoint()
+
+def start_checkpoint_thread_if_needed():
+    global _checkpoint_thread
+    with _checkpoint_lock:
+        if _checkpoint_thread is None or not _checkpoint_thread.is_alive():
+            t = threading.Thread(target=_checkpoint_loop, daemon=True, name="checkpoint-loop")
+            t.start()
+            _checkpoint_thread = t
+            logging.info(f"Checkpoint thread started (period={_checkpoint_period}s)")
+
+def set_checkpoint_period(seconds: int):
+    global _checkpoint_period
+    _checkpoint_period = int(seconds)
+    logging.info(f"Checkpoint period updated to {_checkpoint_period}s")
