@@ -86,5 +86,5 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         stateful_sentiment_aggregator.logging.info(f"[RPC] Checkpoint period set to {request.seconds}s")
         return pb2.EmptyProto()
 
-    def GetCurrentVersion(self, request, context):
+    def get_current_version(self, request, context):
         return stateful_sentiment_aggregator.aggregator.get_current_version(request, context)
