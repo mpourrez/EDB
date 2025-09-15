@@ -14,10 +14,12 @@ import signal
 
 class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer):
 
+    def ping(self, request, context):
+        return pb2.EmptyProto()
+
     def __init__(self, *args, **kwargs):
         self.resource_thread = None
         self.power_thread = None
-
         self.fault_injection_process = None
         self.fault_injection_parent_process = None
         self.fault_injection_start_times_ms = []
@@ -25,27 +27,61 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
         self.utilization_output = None
         self.resource_tracing_process = None
 
-    def ping(self, request, context):
-        return pb2.EmptyProto()
+    # ------------------------------
+    # helpers to safely restart threads
+    # ------------------------------
+    def _stop_existing_threads(self):
+        # Stop power thread if alive
+        if self.power_thread:
+            try:
+                self.power_thread.stop()
+                self.power_thread.join()
+                print("[x] Old Power thread stopped.")
+            except Exception as e:
+                print(f"[!] Error stopping old power thread: {e}")
+            self.power_thread = None
 
+        # Stop resource thread if alive
+        if self.resource_thread:
+            try:
+                self.resource_thread.stop()
+                self.resource_thread.join()
+                print("[x] Old Resource thread stopped.")
+            except Exception as e:
+                print(f"[!] Error stopping old resource thread: {e}")
+            self.resource_thread = None
+
+    # ------------------------------
+    # gRPC methods
+    # ------------------------------
     def start_resource_tracing(self, request, context):
-        print("[x] Tracing resource utilization. ")
-        # Start the resource utilization thread
+        print("[x] Tracing resource utilization.")
+        # clean up previous threads before starting new ones
+        self._stop_existing_threads()
+
+        # Start fresh threads
         self.resource_thread = ResourceUtilizationThread(interval=1)
         self.resource_thread.start()
-        # Start the power measurement thread
+
         self.power_thread = PowerMeasurementThread(interval=1)
         self.power_thread.start()
+
         return pb2.EmptyProto()
 
     def start_resource_tracing_and_saving(self, request, context):
-        print("[x] Tracing resource utilization. ")
-        # Start the resource utilization thread
-        self.resource_thread = ResourceUtilizationSavingThread(interval=1, timeout=request.timeout)
+        print("[x] Tracing resource utilization with saving.")
+        # clean up previous threads before starting new ones
+        self._stop_existing_threads()
+
+        # Start fresh threads
+        self.resource_thread = ResourceUtilizationSavingThread(
+            interval=1, timeout=request.timeout
+        )
         self.resource_thread.start()
-        # Start the power measurement thread
+
         self.power_thread = PowerMeasurementThread(interval=1)
         self.power_thread.start()
+
         return pb2.EmptyProto()
 
     def get_resource_utilization(self, request, context):
@@ -142,64 +178,79 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
 
     def get_resource_logs(self, request, context):
         print("[x] Received resource log request.")
+
+        # --- stop power measurement thread ---
         try:
-            os.kill(self.power_thread.get_power_process().pid, signal.SIGTERM)
-        except:
-            pass
-        self.power_thread.stop()
-        self.power_thread.join()
-        print("[x] Power thread stopped.")
-        # Stop the resource utilization thread and get the average values
-        self.resource_thread.stop()
-        self.resource_thread.join()
-        print("[x] Resource thread stopped.")
-        # Send a signal to the stress process to terminate it
+            if self.power_thread:
+                self.power_thread.stop()
+                self.power_thread.join()
+                print("[x] Power thread stopped.")
+        except Exception as e:
+            print(f"[!] Error stopping power thread: {e}")
+
+        # --- stop resource utilization thread ---
         try:
-            os.kill(self.fault_injection_parent_process.pid, signal.SIGTERM)
-            print("[x] Fault Injection Parent Process Killed.")
-        except:
+            if self.resource_thread:
+                self.resource_thread.stop()
+                self.resource_thread.join()
+                print("[x] Resource thread stopped.")
+        except Exception as e:
+            print(f"[!] Error stopping resource thread: {e}")
+
+        # --- stop fault injection if still alive ---
+        try:
+            if self.fault_injection_parent_process:
+                os.kill(self.fault_injection_parent_process.pid, signal.SIGTERM)
+                print("[x] Fault Injection Parent Process Killed.")
+        except Exception:
             pass
         try:
-            os.kill(self.fault_injection_process.pid, signal.SIGTERM)
-            print("[x] Fault Injection Process Killed.")
-        except:
+            if self.fault_injection_process:
+                os.kill(self.fault_injection_process.pid, signal.SIGTERM)
+                print("[x] Fault Injection Process Killed.")
+        except Exception:
             pass
+
         self.fault_injection_stop_times_ms.append(utils.current_milli_time())
 
+        # --- read resource logs ---
         with open('cpu_utilization.log', "rb") as f:
             cpu_data = f.read()
-
         with open('memory_utilization.log', "rb") as f:
             memory_data = f.read()
-
         with open('network_utilization.log', "rb") as f:
             network_data = f.read()
-
         with open('ios_utilization.log', "rb") as f:
             ios_data = f.read()
 
-        cpu_file_data = pb2.FileData()
-        cpu_file_data.data = cpu_data
+        cpu_file_data = pb2.FileData(data=cpu_data)
+        memory_file_data = pb2.FileData(data=memory_data)
+        network_file_data = pb2.FileData(data=network_data)
+        ios_file_data = pb2.FileData(data=ios_data)
 
-        memory_file_data = pb2.FileData()
-        memory_file_data.data = memory_data
+        # --- collect temperatures ---
+        temp_timestamps, cpu_temperatures = [], []
+        try:
+            if self.power_thread:
+                temp_timestamps, cpu_temperatures = self.power_thread.get_temperatures()
+        except Exception as e:
+            print(f"[!] Error collecting temperatures: {e}")
 
-        network_file_data = pb2.FileData()
-        network_file_data.data = network_data
+        resource_logs = pb2.ResourceLogs(
+            cpu_log=cpu_file_data,
+            memory_log=memory_file_data,
+            io_log=ios_file_data,
+            network_log=network_file_data,
+            fault_injection_start_times_ms=self.fault_injection_start_times_ms,
+            fault_injection_stop_times_ms=self.fault_injection_stop_times_ms,
+            temperature_timestamps_ms=temp_timestamps,
+            cpu_temperatures=cpu_temperatures,
+        )
 
-        ios_file_data = pb2.FileData()
-        ios_file_data.data = ios_data
-
-        temperature_timestamps_ms, cpu_temperatures = self.power_thread.get_temperatures()
-
-        resource_logs = pb2.ResourceLogs(cpu_log=cpu_file_data, memory_log=memory_file_data, io_log=ios_file_data,
-                                         network_log=network_file_data,
-                                         fault_injection_start_times_ms=self.fault_injection_start_times_ms,
-                                         fault_injection_stop_times_ms=self.fault_injection_stop_times_ms,
-                                         temperature_timestamps_ms=temperature_timestamps_ms,
-                                         cpu_temperatures=cpu_temperatures)
+        # reset fault injection state
         self.fault_injection_start_times_ms = []
         self.fault_injection_stop_times_ms = []
+
         return resource_logs
 
     # OLD CODE BELOW
@@ -265,177 +316,221 @@ def _is_jetson():
     # Fallback: tegrastats exists
     return os.path.exists("/usr/bin/tegrastats") or os.path.exists("/bin/tegrastats")
 
-def _read_rpi_cpu_temp():
-    """
-    Returns CPU temp in °C using vcgencmd; None if unavailable.
-    """
-    # try:
-    #     # vcgencmd typically resides in /usr/bin on Raspberry Pi OS
-    #     proc = subprocess.Popen(["/usr/bin/vcgencmd", "measure_temp"],
-    #                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    #     out, _ = proc.communicate(timeout=2)
-    #     # Example output: b"temp=53.2'C\n"
-    #     s = out.decode(errors="ignore").strip()
-    #     if "temp=" in s:
-    #         val = s.split("temp=")[1].split("'")[0]
-    #         return float(val), proc
-    # except Exception:
-    #     pass
-    # return None, None
-    try:
-        with open("/sys/class/thermal/thermal_zone0/temp") as f:
-            return float(f.read()) / 1000.0, None
-    except Exception:
-        return None, None
-
-def _read_jetson_cpu_temp_from_sysfs():
-    """
-    Read CPU temperature from thermal zones on Jetson.
-    Returns (temp_c, None) or (None, None).
-    """
-    # Search thermal zones for CPU-like sensors
-    # Typical types: CPU-therm, Tdiode, GPU-therm, etc.
-    try:
-        for tz in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
-            ttype = _read_text(os.path.join(tz, "type"))
-            if not ttype:
-                continue
-            if "cpu" in ttype.lower() or ttype.lower() in {"cpu-therm", "cpu_therm"}:
-                tval = _read_text(os.path.join(tz, "temp"))
-                if tval and tval.isdigit():
-                    # millidegree C
-                    return (int(tval) / 1000.0, None)
-                # Some boards may expose raw °C as float/int
-                try:
-                    return (float(tval), None)
-                except Exception:
-                    pass
-        # Fallback: some Jetsons expose this file
-        alt = _read_text("/sys/devices/gpu.0/temp")
-        if alt:
-            try:
-                v = int(alt) / 1000.0 if alt.isdigit() else float(alt)
-                return (v, None)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return None, None
-
-def _read_jetson_cpu_temp_from_tegrastats():
-    """
-    Parse tegrastats one-shot output.
-    Returns (temp_c, proc_or_none).
-    """
-    try:
-        # Run once; tegrastats prints a line and keeps running, so use timeout+kill
-        proc = subprocess.Popen(["tegrastats", "--interval", "1000"],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # Read a single line with a short timeout
-        out = b""
-        start = time.time()
-        while time.time() - start < 2:
-            chunk = proc.stdout.readline()
-            if not chunk:
-                break
-            out += chunk
-            if b"\n" in chunk:
-                break
-        # Try to stop it cleanly
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-        # Example snippet often contains: "CPU@52.5C GPU@... AO@..."
-        line = out.decode(errors="ignore")
-        for token in line.replace("@", " ").split():
-            if token.endswith("C"):
-                # Take first numeric preceding 'C' (likely CPU)
-                try:
-                    # tokens like 'CPU', '52.5C' -> we search numeric
-                    val = token[:-1]
-                    return (float(val), proc)
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return None, None
+# def _read_rpi_cpu_temp():
+#     """
+#     Returns CPU temp in °C using vcgencmd; None if unavailable.
+#     """
+#     # try:
+#     #     # vcgencmd typically resides in /usr/bin on Raspberry Pi OS
+#     #     proc = subprocess.Popen(["/usr/bin/vcgencmd", "measure_temp"],
+#     #                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+#     #     out, _ = proc.communicate(timeout=2)
+#     #     # Example output: b"temp=53.2'C\n"
+#     #     s = out.decode(errors="ignore").strip()
+#     #     if "temp=" in s:
+#     #         val = s.split("temp=")[1].split("'")[0]
+#     #         return float(val), proc
+#     # except Exception:
+#     #     pass
+#     # return None, None
+#     try:
+#         with open("/sys/class/thermal/thermal_zone0/temp") as f:
+#             return float(f.read()) / 1000.0, None
+#     except Exception:
+#         return None, None
+#
+# def _read_jetson_cpu_temp_from_sysfs():
+#     """
+#     Read CPU temperature from thermal zones on Jetson.
+#     Returns (temp_c, None) or (None, None).
+#     """
+#     # Search thermal zones for CPU-like sensors
+#     # Typical types: CPU-therm, Tdiode, GPU-therm, etc.
+#     try:
+#         for tz in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
+#             ttype = _read_text(os.path.join(tz, "type"))
+#             if not ttype:
+#                 continue
+#             if "cpu" in ttype.lower() or ttype.lower() in {"cpu-therm", "cpu_therm"}:
+#                 tval = _read_text(os.path.join(tz, "temp"))
+#                 if tval and tval.isdigit():
+#                     # millidegree C
+#                     return (int(tval) / 1000.0, None)
+#                 # Some boards may expose raw °C as float/int
+#                 try:
+#                     return (float(tval), None)
+#                 except Exception:
+#                     pass
+#         # Fallback: some Jetsons expose this file
+#         alt = _read_text("/sys/devices/gpu.0/temp")
+#         if alt:
+#             try:
+#                 v = int(alt) / 1000.0 if alt.isdigit() else float(alt)
+#                 return (v, None)
+#             except Exception:
+#                 pass
+#     except Exception:
+#         pass
+#     return None, None
+#
+# def _read_jetson_cpu_temp_from_tegrastats():
+#     """
+#     Parse tegrastats one-shot output.
+#     Returns (temp_c, proc_or_none).
+#     """
+#     try:
+#         # Run once; tegrastats prints a line and keeps running, so use timeout+kill
+#         proc = subprocess.Popen(["tegrastats", "--interval", "1000"],
+#                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+#         # Read a single line with a short timeout
+#         out = b""
+#         start = time.time()
+#         while time.time() - start < 2:
+#             chunk = proc.stdout.readline()
+#             if not chunk:
+#                 break
+#             out += chunk
+#             if b"\n" in chunk:
+#                 break
+#         # Try to stop it cleanly
+#         try:
+#             proc.terminate()
+#         except Exception:
+#             pass
+#         # Example snippet often contains: "CPU@52.5C GPU@... AO@..."
+#         line = out.decode(errors="ignore")
+#         for token in line.replace("@", " ").split():
+#             if token.endswith("C"):
+#                 # Take first numeric preceding 'C' (likely CPU)
+#                 try:
+#                     # tokens like 'CPU', '52.5C' -> we search numeric
+#                     val = token[:-1]
+#                     return (float(val), proc)
+#                 except Exception:
+#                     continue
+#     except Exception:
+#         pass
+#     return None, None
 
 
 class PowerMeasurementThread(threading.Thread):
     """
     Cross-device temperature sampler (Raspberry Pi & Jetson Nano).
-
-    API is kept identical to your original class for compatibility:
-      - get_temperatures() -> (timestamps_ms, temps_c)
-      - get_average_power() -> average temperature in °C
-      - get_power_process() -> last subprocess (may be None on sysfs path)
+    Avoids repeated fork() calls that trigger gRPC warnings.
     """
+
     def __init__(self, interval):
         super().__init__()
         self.interval = interval
         self.stop_flag = False
-        self.power_timestamps = []
-        self.power_data = []
-        self._last_proc = None
+        self.timestamps = []
+        self.temps = []
+        self._tegrastats_proc = None
 
         # Detect platform once
         self._on_rpi = _is_raspberry_pi()
         self._on_jetson = (not self._on_rpi) and _is_jetson()
 
     def run(self):
+        if self._on_jetson and not self._have_sysfs_temp():
+            # Start one long-running tegrastats reader
+            self._tegrastats_proc = subprocess.Popen(
+                ["tegrastats", "--interval", str(self.interval * 1000)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                universal_newlines=True,
+            )
+
         while not self.stop_flag:
             ts = utils.current_milli_time()
             temp_c = None
-            proc_ref = None
 
+            # --- Raspberry Pi: use sysfs
             if self._on_rpi:
-                temp_c, proc_ref = _read_rpi_cpu_temp()
+                temp_c = self._read_sysfs_temp("/sys/class/thermal/thermal_zone0/temp")
 
-            if temp_c is None and self._on_jetson:
-                temp_c, proc_ref = _read_jetson_cpu_temp_from_sysfs()
-                if temp_c is None:
-                    # fallback to tegrastats if sysfs missing/not readable
-                    temp_c, proc_ref = _read_jetson_cpu_temp_from_tegrastats()
+            # --- Jetson: try sysfs first
+            if self._on_jetson and temp_c is None:
+                temp_c = self._read_jetson_sysfs()
 
-            if temp_c is None:
-                # Last-resort generic Linux hwmon sweep
+            # --- Jetson fallback: read from tegrastats process
+            if self._on_jetson and temp_c is None and self._tegrastats_proc:
                 try:
-                    # Look for any temp*_input under hwmon and pick the first sane value
-                    for p in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
-                        raw = _read_text(p)
-                        if raw and raw.isdigit():
-                            v = int(raw) / 1000.0
-                            if 0.0 < v < 120.0:
-                                temp_c = v
+                    line = self._tegrastats_proc.stdout.readline()
+                    if line:
+                        for token in line.replace("@", " ").split():
+                            if token.endswith("C"):
+                                temp_c = float(token[:-1])
                                 break
                 except Exception:
                     pass
 
+            # --- Generic Linux fallback
+            if temp_c is None:
+                temp_c = self._read_hwmon_generic()
+
             if temp_c is not None:
-                self.power_timestamps.append(ts)
-                self.power_data.append(float(temp_c))
-            # keep track of last proc for get_power_process(); may be None
-            self._last_proc = proc_ref
+                self.timestamps.append(ts)
+                self.temps.append(temp_c)
 
             time.sleep(self.interval)
 
-    def get_power_process(self):
-        # May be None when reading from sysfs; callers should guard with try/except (your code already does).
-        return self._last_proc
-
     def stop(self):
         self.stop_flag = True
+        if self._tegrastats_proc:
+            try:
+                self._tegrastats_proc.terminate()
+            except Exception:
+                pass
+
+    # ------------------ helpers ------------------
+
+    def _have_sysfs_temp(self):
+        return bool(glob.glob("/sys/devices/virtual/thermal/thermal_zone*"))
+
+    def _read_sysfs_temp(self, path):
+        try:
+            with open(path) as f:
+                raw = f.read().strip()
+                return int(raw) / 1000.0 if raw.isdigit() else float(raw)
+        except Exception:
+            return None
+
+    def _read_jetson_sysfs(self):
+        try:
+            for tz in glob.glob("/sys/devices/virtual/thermal/thermal_zone*"):
+                ttype = _read_text(os.path.join(tz, "type"))
+                if ttype and "cpu" in ttype.lower():
+                    val = _read_text(os.path.join(tz, "temp"))
+                    if val and val.isdigit():
+                        return int(val) / 1000.0
+                    try:
+                        return float(val)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return None
+
+    def _read_hwmon_generic(self):
+        try:
+            for p in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
+                raw = _read_text(p)
+                if raw and raw.isdigit():
+                    v = int(raw) / 1000.0
+                    if 0.0 < v < 120.0:
+                        return v
+        except Exception:
+            pass
+        return None
+
+    # ------------------ public API ------------------
 
     def get_temperatures(self):
-        # Returns timestamps (ms) and temperatures (°C)
-        return self.power_timestamps, self.power_data
+        return self.timestamps, self.temps
 
     def get_average_power(self):
-        # Backwards-compatible name: returns average temperature in °C
-        return (sum(self.power_data) / len(self.power_data)) if self.power_data else 0.0
-
-
+        return (sum(self.temps) / len(self.temps)) if self.temps else 0.0
 
 class ResourceUtilizationThread(threading.Thread):
     def __init__(self, interval):
