@@ -269,19 +269,24 @@ def _read_rpi_cpu_temp():
     """
     Returns CPU temp in °C using vcgencmd; None if unavailable.
     """
+    # try:
+    #     # vcgencmd typically resides in /usr/bin on Raspberry Pi OS
+    #     proc = subprocess.Popen(["/usr/bin/vcgencmd", "measure_temp"],
+    #                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #     out, _ = proc.communicate(timeout=2)
+    #     # Example output: b"temp=53.2'C\n"
+    #     s = out.decode(errors="ignore").strip()
+    #     if "temp=" in s:
+    #         val = s.split("temp=")[1].split("'")[0]
+    #         return float(val), proc
+    # except Exception:
+    #     pass
+    # return None, None
     try:
-        # vcgencmd typically resides in /usr/bin on Raspberry Pi OS
-        proc = subprocess.Popen(["/usr/bin/vcgencmd", "measure_temp"],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, _ = proc.communicate(timeout=2)
-        # Example output: b"temp=53.2'C\n"
-        s = out.decode(errors="ignore").strip()
-        if "temp=" in s:
-            val = s.split("temp=")[1].split("'")[0]
-            return float(val), proc
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return float(f.read()) / 1000.0, None
     except Exception:
-        pass
-    return None, None
+        return None, None
 
 def _read_jetson_cpu_temp_from_sysfs():
     """
