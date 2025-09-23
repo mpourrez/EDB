@@ -160,9 +160,9 @@ def _apply_checkpoint_to_peer(host: str, snap: pb2.CheckpointSnapshot):
         with grpc.insecure_channel(target) as ch:
             stub = pb2_grpc.ApplicationBenchmarksStub(ch)
             _ = stub.apply_checkpoint(snap, timeout=5.0)
-        logging.info(f"[Checkpoint] Applied to backup {target} (v={snap.version})")
+        logging.info(f"[Checkpoint] Applied snapshot v={snap.version} to {target}")
     except Exception as e:
-        logging.warning(f"[Checkpoint] Failed to apply to {target}: {e}")
+        logging.warning(f"[Checkpoint] Failed to apply snapshot v={snap.version} to {target}: {e}")
 
 def _push_checkpoint_loop():
     global _checkpoint_period
