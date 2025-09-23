@@ -17,7 +17,13 @@ service ApplicationBenchmarks{
   rpc object_tracking(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc object_tracking_gpu(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc sentiment_aggregation(SentimentAggregationRequest) returns (SentimentAggregationResponse) {}
-  rpc set_checkpoint_period(CheckpointConfig) returns (EmptyProto) {}
+  // Role & period config
+  rpc set_role_and_peers(SetRoleAndPeersRequest) returns (Ack);
+  rpc set_checkpoint_period(SetCheckpointPeriodRequest) returns (Ack);
+
+  // Checkpoints
+  rpc get_checkpoint(EmptyProto) returns (CheckpointSnapshot);
+  rpc apply_checkpoint(CheckpointSnapshot) returns (Ack);
   rpc get_current_version(VersionRequest) returns (VersionResponse) {}
 }
 
@@ -272,10 +278,28 @@ message SentimentAggregationResponse {
   int64 response_received_time_ms = 10;
 }
 
-message CheckpointConfig {
+// ===== Role & peer config =====
+enum Role {
+  ROLE_UNKNOWN = 0;
+  ROLE_PRIMARY = 1;
+  ROLE_BACKUP  = 2;
+}
+
+message SetRoleAndPeersRequest {
+  Role role = 1;
+  repeated string peer_hosts = 2;  // IPs/hostnames of all other replicas
+}
+
+message SetCheckpointPeriodRequest {
   int32 seconds = 1;
 }
 
+message Ack {
+  bool ok = 1;
+  string msg = 2;
+}
+
+// ===== Checkpointing =====
 message VersionRequest {
   string key = 1;
 }
@@ -283,6 +307,19 @@ message VersionRequest {
 message VersionResponse {
   string key = 1;
   int64 state_version = 2;
+}
+
+message CheckpointSnapshot {
+  int64 version = 1;
+  string last_op_id = 2;
+  // Map: key -> entry
+  message Entry {
+    double polarity = 1;
+    double subjectivity = 2;
+    repeated double window_p = 3; // polarity window
+    repeated double window_s = 4; // subjectivity window
+  }
+  map<string, Entry> state = 3;
 }
 
 /********************************************************

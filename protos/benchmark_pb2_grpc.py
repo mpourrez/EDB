@@ -104,10 +104,25 @@ class ApplicationBenchmarksStub(object):
                 request_serializer=benchmark__pb2.SentimentAggregationRequest.SerializeToString,
                 response_deserializer=benchmark__pb2.SentimentAggregationResponse.FromString,
                 _registered_method=True)
+        self.set_role_and_peers = channel.unary_unary(
+                '/protos.ApplicationBenchmarks/set_role_and_peers',
+                request_serializer=benchmark__pb2.SetRoleAndPeersRequest.SerializeToString,
+                response_deserializer=benchmark__pb2.Ack.FromString,
+                _registered_method=True)
         self.set_checkpoint_period = channel.unary_unary(
                 '/protos.ApplicationBenchmarks/set_checkpoint_period',
-                request_serializer=benchmark__pb2.CheckpointConfig.SerializeToString,
-                response_deserializer=benchmark__pb2.EmptyProto.FromString,
+                request_serializer=benchmark__pb2.SetCheckpointPeriodRequest.SerializeToString,
+                response_deserializer=benchmark__pb2.Ack.FromString,
+                _registered_method=True)
+        self.get_checkpoint = channel.unary_unary(
+                '/protos.ApplicationBenchmarks/get_checkpoint',
+                request_serializer=benchmark__pb2.EmptyProto.SerializeToString,
+                response_deserializer=benchmark__pb2.CheckpointSnapshot.FromString,
+                _registered_method=True)
+        self.apply_checkpoint = channel.unary_unary(
+                '/protos.ApplicationBenchmarks/apply_checkpoint',
+                request_serializer=benchmark__pb2.CheckpointSnapshot.SerializeToString,
+                response_deserializer=benchmark__pb2.Ack.FromString,
                 _registered_method=True)
         self.get_current_version = channel.unary_unary(
                 '/protos.ApplicationBenchmarks/get_current_version',
@@ -203,7 +218,27 @@ class ApplicationBenchmarksServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def set_role_and_peers(self, request, context):
+        """Role & period config
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def set_checkpoint_period(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def get_checkpoint(self, request, context):
+        """Checkpoints
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def apply_checkpoint(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -288,10 +323,25 @@ def add_ApplicationBenchmarksServicer_to_server(servicer, server):
                     request_deserializer=benchmark__pb2.SentimentAggregationRequest.FromString,
                     response_serializer=benchmark__pb2.SentimentAggregationResponse.SerializeToString,
             ),
+            'set_role_and_peers': grpc.unary_unary_rpc_method_handler(
+                    servicer.set_role_and_peers,
+                    request_deserializer=benchmark__pb2.SetRoleAndPeersRequest.FromString,
+                    response_serializer=benchmark__pb2.Ack.SerializeToString,
+            ),
             'set_checkpoint_period': grpc.unary_unary_rpc_method_handler(
                     servicer.set_checkpoint_period,
-                    request_deserializer=benchmark__pb2.CheckpointConfig.FromString,
-                    response_serializer=benchmark__pb2.EmptyProto.SerializeToString,
+                    request_deserializer=benchmark__pb2.SetCheckpointPeriodRequest.FromString,
+                    response_serializer=benchmark__pb2.Ack.SerializeToString,
+            ),
+            'get_checkpoint': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_checkpoint,
+                    request_deserializer=benchmark__pb2.EmptyProto.FromString,
+                    response_serializer=benchmark__pb2.CheckpointSnapshot.SerializeToString,
+            ),
+            'apply_checkpoint': grpc.unary_unary_rpc_method_handler(
+                    servicer.apply_checkpoint,
+                    request_deserializer=benchmark__pb2.CheckpointSnapshot.FromString,
+                    response_serializer=benchmark__pb2.Ack.SerializeToString,
             ),
             'get_current_version': grpc.unary_unary_rpc_method_handler(
                     servicer.get_current_version,
@@ -688,6 +738,33 @@ class ApplicationBenchmarks(object):
             _registered_method=True)
 
     @staticmethod
+    def set_role_and_peers(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.ApplicationBenchmarks/set_role_and_peers',
+            benchmark__pb2.SetRoleAndPeersRequest.SerializeToString,
+            benchmark__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def set_checkpoint_period(request,
             target,
             options=(),
@@ -702,8 +779,62 @@ class ApplicationBenchmarks(object):
             request,
             target,
             '/protos.ApplicationBenchmarks/set_checkpoint_period',
-            benchmark__pb2.CheckpointConfig.SerializeToString,
-            benchmark__pb2.EmptyProto.FromString,
+            benchmark__pb2.SetCheckpointPeriodRequest.SerializeToString,
+            benchmark__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def get_checkpoint(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.ApplicationBenchmarks/get_checkpoint',
+            benchmark__pb2.EmptyProto.SerializeToString,
+            benchmark__pb2.CheckpointSnapshot.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def apply_checkpoint(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/protos.ApplicationBenchmarks/apply_checkpoint',
+            benchmark__pb2.CheckpointSnapshot.SerializeToString,
+            benchmark__pb2.Ack.FromString,
             options,
             channel_credentials,
             insecure,

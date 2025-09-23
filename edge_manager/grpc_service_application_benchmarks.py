@@ -81,10 +81,19 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         response = stateful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
         return response
 
+    # ===== Replication-specific RPCs (new style) =====
+    def set_role_and_peers(self, request, context):
+        return stateful_sentiment_aggregator.rpc_set_role_and_peers(request, context)
+
     def set_checkpoint_period(self, request, context):
-        stateful_sentiment_aggregator.set_checkpoint_period(request.seconds)
-        stateful_sentiment_aggregator.logging.info(f"[RPC] Checkpoint period set to {request.seconds}s")
-        return pb2.EmptyProto()
+        return stateful_sentiment_aggregator.rpc_set_checkpoint_period(request, context)
+
+    def get_checkpoint(self, request, context):
+        return stateful_sentiment_aggregator.rpc_get_checkpoint(request, context)
+
+    def apply_checkpoint(self, request, context):
+        return stateful_sentiment_aggregator.rpc_apply_checkpoint(request, context)
 
     def get_current_version(self, request, context):
-        return stateful_sentiment_aggregator.aggregator.get_current_version(request, context)
+        return stateful_sentiment_aggregator.get_current_version(request, context)
+
