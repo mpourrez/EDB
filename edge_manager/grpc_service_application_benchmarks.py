@@ -11,7 +11,7 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         self.fault_injection_process = None
         self.utilization_output = None
         self.resource_tracing_process = None
-        stateful_sentiment_aggregator.start_checkpoint_thread_if_needed()
+        # stateful_sentiment_aggregator.start_checkpoint_thread_if_needed()
 
     def image_processing(self, request, context):
         request_received_time_ms = current_milli_time()
