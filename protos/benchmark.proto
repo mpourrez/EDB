@@ -17,14 +17,17 @@ service ApplicationBenchmarks{
   rpc object_tracking(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc object_tracking_gpu(ObjectTrackingRequest) returns (ObjectTrackingResponse) {}
   rpc sentiment_aggregation(SentimentAggregationRequest) returns (SentimentAggregationResponse) {}
+  rpc slam_vf(SLAMVFRequest) returns (SLAMVFResponse) {}
   // Role & period config
   rpc set_role_and_peers(SetRoleAndPeersRequest) returns (Ack);
   rpc set_checkpoint_period(SetCheckpointPeriodRequest) returns (Ack);
 
   // Checkpoints
-  rpc get_checkpoint(EmptyProto) returns (CheckpointSnapshot);
+  rpc get_checkpoint(VersionRequest) returns (CheckpointSnapshot);
   rpc apply_checkpoint(CheckpointSnapshot) returns (Ack);
   rpc get_current_version(VersionRequest) returns (VersionResponse) {}
+  rpc get_log_tail(LogTailRequest) returns (LogTail);
+  rpc apply_log_tail(LogTail) returns (Ack);
 }
 
 service MicroBenchmarks{
@@ -278,6 +281,39 @@ message SentimentAggregationResponse {
   int64 response_received_time_ms = 10;
 }
 
+// ================================
+// SLAM-VF (ordered video frames, stateful per-session SLAM)
+// ================================
+
+message SLAMVFRequest {
+  string session_id = 1;       // identifies the SLAM session/track
+  int64 frame_id = 2;          // sequential frame index (0-based or dataset-native)
+  string frame = 3;            // base64-encoded image bytes (gRPC frame transfer)
+  bool reset = 4;              // if true, drop any prior state for this session before processing
+  int64 request_time_ms = 5;   // client-side timestamp
+  string req_id = 6;           // idempotency token; under ACTIVE replication the same
+                               //   req_id arrives at every replica — duplicates skip state update
+}
+
+message SLAMVFResponse {
+  string session_id = 1;
+  int64 frame_id = 2;
+  bool tracked = 3;            // pose was estimated against the previous frame
+  int32 num_features = 4;      // keypoints detected on this frame
+  int32 num_matches = 5;       // matches with the previous frame
+  int32 num_map_points = 6;    // total accumulated map points for the session
+  int32 num_keyframes = 7;     // total keyframes inserted for the session
+  repeated float pose = 8;     // accumulated 4x4 camera pose, row-major (16 floats)
+  int64 state_version = 9;     // monotonic per-session frame counter
+  int64 request_time_ms = 10;
+  int64 request_received_time_ms = 11;
+  int64 response_time_ms = 12;
+  int64 response_received_time_ms = 13;
+  int32 num_inliers = 14;      // RANSAC inliers used to recover pose
+  int32 frame_bytes_size = 15; // size of the request frame payload in bytes (server-echoed)
+  bool applied = 16;           // false if the request was a duplicate (req_id already seen)
+}
+
 // ===== Role & peer config =====
 enum Role {
   ROLE_UNKNOWN = 0;
@@ -292,6 +328,7 @@ message SetRoleAndPeersRequest {
 
 message SetCheckpointPeriodRequest {
   int32 seconds = 1;
+  string app = 2;   // optional: "SA-AGG" | "SLAM-VF". Empty = applies to all stateful apps.
 }
 
 message Ack {
@@ -302,17 +339,71 @@ message Ack {
 // ===== Checkpointing =====
 message VersionRequest {
   string key = 1;
+  string app = 2;   // "SA-AGG" | "SLAM-VF"; empty defaults to SA-AGG for back-compat
 }
 
 message VersionResponse {
   string key = 1;
   int64 state_version = 2;
+  string app = 3;   // echoes the resolved app
+}
+
+// Compact per-keyframe metadata for SLAM-VF checkpoints (no raw frames).
+message SLAMKeyframeRecord {
+  int64 frame_id = 1;
+  float tx = 2;
+  float ty = 3;
+  float tz = 4;
+  float theta = 5;
+  int32 num_inliers = 6;   // ~map points contributed by this keyframe
+}
+
+message SLAMSessionSnapshot {
+  string video_id = 1;
+  int64 state_version = 2;
+  int64 last_frame_id = 3;
+  float pose_x = 4;
+  float pose_y = 5;
+  float pose_theta = 6;
+  int32 keyframe_count = 7;
+  int32 map_point_count = 8;
+  repeated SLAMKeyframeRecord keyframes = 9; // compact keyframe metadata
+}
+
+// Compact per-frame log entry used for SLAM-VF incremental recovery.
+// Carries metadata only — no raw frame bytes, no ORB descriptors.
+message SLAMFrameLogEntry {
+  int64 version = 1;     // state version after this frame
+  int64 frame_id = 2;
+  bool tracked = 3;
+  int32 num_features = 4;
+  int32 num_matches = 5;
+  int32 num_inliers = 6;
+  bool was_keyframe = 7; // whether this frame became a keyframe
+  // Cumulative pose AFTER processing (X-Z plane + yaw about world Y).
+  float pose_x = 8;
+  float pose_y = 9;
+  float pose_theta = 10;
+}
+
+message LogTailRequest {
+  string app = 1;            // "SLAM-VF" | "SA-AGG"
+  string key = 2;            // SLAM-VF: session id; SA-AGG: aggregator key
+  int64 since_version = 3;   // return entries with version > since_version
+}
+
+message LogTail {
+  string app = 1;
+  string key = 2;
+  int64 from_version = 3;   // exclusive lower bound (snapshot's version)
+  int64 to_version = 4;     // inclusive upper bound (last entry's version)
+  repeated SLAMFrameLogEntry slam_entries = 5;
 }
 
 message CheckpointSnapshot {
   int64 version = 1;
   string last_op_id = 2;
-  // Map: key -> entry
+  // SA-AGG state: key -> entry. Other apps leave this empty.
   message Entry {
     double polarity = 1;
     double subjectivity = 2;
@@ -320,6 +411,11 @@ message CheckpointSnapshot {
     repeated double window_s = 4; // subjectivity window
   }
   map<string, Entry> state = 3;
+  // Generalization: identifies which app/key this snapshot belongs to.
+  // Empty app is treated as "SA-AGG" for back-compat with legacy callers.
+  string app = 4;
+  string key = 5;
+  SLAMSessionSnapshot slam = 6;
 }
 
 /********************************************************

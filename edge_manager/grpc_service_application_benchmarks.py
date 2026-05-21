@@ -1,5 +1,6 @@
 from applications import sentiment_analysis, image_processing, speech_to_text, pocket_sphinx, aeneas, \
-    object_detection_darknet_cpu, object_detection_darknet_gpu, object_tracker, stateful_sentiment_aggregator
+    object_detection_darknet_cpu, object_detection_darknet_gpu, object_tracker, stateful_sentiment_aggregator, \
+    slam_vf
 from applications.image_classification import image_classification_alexnet_cpu, image_classification_alexnet_gpu, \
     image_classification_squeezenet_cpu, image_classification_squeezenet_gpu
 from utils import *
@@ -81,19 +82,67 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         response = stateful_sentiment_aggregator.analyze_sentiment_stateful(request, request_received_time_ms)
         return response
 
-    # ===== Replication-specific RPCs (new style) =====
+    def slam_vf(self, request, context):
+        request_received_time_ms = current_milli_time()
+        return slam_vf.process_frame(request, request_received_time_ms)
+
+    # ===== Replication-specific RPCs (multi-app router) =====
+    # The (app, key) pair on each request selects which stateful app handles it.
+    # Empty app falls back to "SA-AGG" for back-compat with legacy callers.
+    @staticmethod
+    def _resolve_app(req):
+        return (getattr(req, "app", "") or "SA-AGG")
+
     def set_role_and_peers(self, request, context):
-        return stateful_sentiment_aggregator.rpc_set_role_and_peers(request, context)
+        # Apply to every stateful app on this edge; both pushers need to know
+        # the current role/peers regardless of which app the orchestrator will
+        # exercise next.
+        ack = stateful_sentiment_aggregator.rpc_set_role_and_peers(request, context)
+        try:
+            slam_vf.set_role_and_peers(request.role, request.peer_hosts)
+        except Exception as e:
+            from protos import benchmark_pb2 as _pb2
+            return _pb2.Ack(ok=False, msg=f"slam-vf role failed: {e}")
+        return ack
 
     def set_checkpoint_period(self, request, context):
+        app = self._resolve_app(request)
+        if app == "SLAM-VF":
+            slam_vf.set_checkpoint_period(request.seconds)
+            from protos import benchmark_pb2 as _pb2
+            return _pb2.Ack(ok=True, msg=f"slam-vf period={request.seconds}s")
+        if app == "":
+            # Empty app: legacy behavior — apply to SA-AGG only.
+            return stateful_sentiment_aggregator.rpc_set_checkpoint_period(request, context)
+        if app == "*":
+            stateful_sentiment_aggregator.rpc_set_checkpoint_period(request, context)
+            slam_vf.set_checkpoint_period(request.seconds)
+            from protos import benchmark_pb2 as _pb2
+            return _pb2.Ack(ok=True, msg=f"all stateful apps period={request.seconds}s")
+        # Default: SA-AGG
         return stateful_sentiment_aggregator.rpc_set_checkpoint_period(request, context)
 
     def get_checkpoint(self, request, context):
+        if self._resolve_app(request) == "SLAM-VF":
+            return slam_vf.rpc_get_checkpoint(request, context)
         return stateful_sentiment_aggregator.rpc_get_checkpoint(request, context)
 
     def apply_checkpoint(self, request, context):
+        if self._resolve_app(request) == "SLAM-VF":
+            return slam_vf.rpc_apply_checkpoint(request, context)
         return stateful_sentiment_aggregator.rpc_apply_checkpoint(request, context)
 
     def get_current_version(self, request, context):
+        if self._resolve_app(request) == "SLAM-VF":
+            return slam_vf.rpc_get_current_version(request, context)
         return stateful_sentiment_aggregator.get_current_version(request, context)
 
+    def get_log_tail(self, request, context):
+        if self._resolve_app(request) == "SLAM-VF":
+            return slam_vf.rpc_get_log_tail(request, context)
+        return stateful_sentiment_aggregator.rpc_get_log_tail(request, context)
+
+    def apply_log_tail(self, request, context):
+        if self._resolve_app(request) == "SLAM-VF":
+            return slam_vf.rpc_apply_log_tail(request, context)
+        return stateful_sentiment_aggregator.rpc_apply_log_tail(request, context)
