@@ -150,3 +150,4 @@ analytics/
 benchmark_orchestrator/*.perf.data
 benchmark_orchestrator/experiment.txt
 benchmark_orchestrator/experiment.txt.pub
+analytics/
