@@ -24,7 +24,6 @@ dependencies:
     - numpy
     - pydub
     - soundfile
-    - librosa
     - nltk
     - textblob
     - torch

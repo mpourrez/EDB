@@ -1,14 +1,14 @@
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import datetime
 import math
 import csv
-from .. import configs
+import configs
 
 class AppFaultStatistics:
-    def __init__(self, app, fault):
+    def __init__(self, device, app, fault):
         super().__init__()
+        self.device = device
         self.app = app
         self.fault = fault
 
@@ -19,7 +19,7 @@ class AppFaultStatistics:
         # CPU Temperatures
         self.cpu_temp_datetimes, self.cpu_temperatures = None, None
         # Latencies
-        self.request_datetimes, self.response_datetimes, self.compute_times, self.transmission_times = None, None, None, None
+        self.request_received_datetimes, self.response_datetimes, self.rtt, self.compute_times, self.transmission_times = None, None, None, None, None
         # Memory Utilizations
         self.mem_datetimes, self.mem_utilization = None, None
         # Network Utilizations
@@ -30,23 +30,42 @@ class AppFaultStatistics:
         self.read_all_saved_statistics()
 
     def get_base_date(self):
-        if self.app == 'FFT' or self.app == 'FPO-SIN' or self.app == 'FPO-SQRT' or self.app == 'SORT':
-            if self.fault != 'No-Fault':
-                return '2023-05-23 '
-
-        if self.app == 'DD' and (self.fault == 'CPU-20' or self.fault == 'CPU-60' or
-                                 self.fault == 'CPU-90' or self.fault == 'MEM-20%'):
-            return '2023-05-23 '
-        return '2023-05-24 '
+        first_datetime_in_latency = self.request_received_datetimes[0]
+        base_date = first_datetime_in_latency.strftime('%Y-%m-%d')
+        return base_date + ' '
+        # if self.device != 'nano':
+        #     if self.fault == 'No-Fault' or self.app == 'PS' or self.app == 'AE' or self.app == 'OD-CPU':
+        #         return '2023-06-01 '
+        #     if self.app == 'IC-S-CPU' or (self.app == 'IC-A-CPU' and 'CPU' not in self.fault):
+        #         return '2023-05-31 '
+        #     if self.fault == 'PING' or self.fault == 'TCP':
+        #         return '2023-08-15 '
+        #     return '2023-05-30 '
+        # else:
+        #     if self.app == 'FFT':
+        #         return '2023-08-12 '
+        #     if self.app == 'FPO-SIN':
+        #         return '2023-06-19 '
+        #     if self.app == 'FPO-SQRT' and 'CPU' in self.fault:
+        #         return '2023-06-19 '
+        #     if self.app == 'FPO-SQRT' and self.fault == 'CCHE-0':
+        #         return '2023-06-19 '
+        #     if self.app == 'SORT' and (self.fault == 'MEM-60%' or self.fault == 'PF-0'):
+        #         return '2023-08-12 '
+        #     if self.app == 'SORT' and 'CPU' not in self.fault:
+        #         return '2023-06-19 '
+        #
+        #     else:
+        #         return '2023-06-20 '
 
 
     def read_all_saved_statistics(self):
+        self.get_latencies()
         self.get_fault_injection_times()
         if len(self.fault_start_times) == 0:
             self.experiment_duration = configs.NUMBER_OF_FAULT_FREE_ROUNDS * configs.FAULT_FREE_DURATIONS
         self.get_cpu_utilization()
         self.get_cpu_temperatures()
-        self.get_latencies()
         self.get_iostat()
         self.get_network_statistics()
         self.get_memory_utilization()
@@ -61,7 +80,7 @@ class AppFaultStatistics:
         elif resource == 'DISK':
             resource_datetime = self.io_datetimes
         elif resource == 'LATENCY':
-            resource_datetime = self.request_datetimes
+            resource_datetime = self.request_received_datetimes
         else:
             resource_datetime = self.cpu_temp_datetimes
         return resource_datetime
@@ -125,7 +144,8 @@ class AppFaultStatistics:
 
     def get_fault_injection_times(self):
         fault_injection_times = pd.read_csv(
-            'results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-FaultInjection.csv',
+            'results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-FaultInjection.csv',
+            # 'results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-FaultInjection.csv',
             delimiter=',')
 
         fault_start_times_cl = fault_injection_times['fault_injection_start_time']
@@ -133,35 +153,53 @@ class AppFaultStatistics:
         self.fault_start_times = []
         self.fault_stop_times = []
 
-        for start_t, stop_t in zip(fault_start_times_cl, fault_stop_times_cl):
+        # for start_t, stop_t in zip(fault_start_times_cl, fault_stop_times_cl):
+        #     fault_start_time = get_datetime_from_timestamp(self.app, self.fault, start_t)
+        #     fault_end_time = get_datetime_from_timestamp(self.app, self.fault, stop_t)
+        #     self.fault_start_times.append(fault_start_time)
+        #     self.fault_stop_times.append(fault_end_time)
+
+        for start_t in fault_start_times_cl:
             fault_start_time = get_datetime_from_timestamp(self.app, self.fault, start_t)
-            fault_end_time = get_datetime_from_timestamp(self.app, self.fault, stop_t)
             self.fault_start_times.append(fault_start_time)
-            self.fault_stop_times.append(fault_end_time)
 
     #############################################
     #########     CPU Utilization    ############
     #############################################
     def get_cpu_utilization(self):
         date = self.get_base_date()
-        cpu_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-CPU.txt',
+        # cpu_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-CPU.txt',
+        cpu_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-CPU.txt',
                              delimiter='\s+', skiprows=2)
         cpu_times = cpu_df.iloc[:, 0]
+        cpu_am_pm = cpu_df.iloc[:, 1]
         self.cpu_datetimes = []
-        for t in cpu_times:
+        previous_datetime = None
+        for (t, am_pm) in zip(cpu_times, cpu_am_pm):
             if 'Average' not in t:
-                cpu_datetime = datetime.datetime.strptime(date + t + ' PM', '%Y-%m-%d %I:%M:%S %p')
-                self.cpu_datetimes.append(cpu_datetime)
-        self.cpu_datetimes = self.cpu_datetimes[:self.experiment_duration + 1]
-        self.user_cpu_utilization = cpu_df['%usr'][:self.experiment_duration + 1]
-        self.sys_cpu_utilization = cpu_df['%sys'][:self.experiment_duration + 1]
-        self.total_cpu_utilization = 100 - cpu_df['%idle'][:self.experiment_duration + 1]
+                cpu_datetime = datetime.datetime.strptime(date + t + ' ' + am_pm, '%Y-%m-%d %I:%M:%S %p')
+                if previous_datetime is not None and previous_datetime.hour == 23 and cpu_datetime.hour == 0:
+                    cpu_datetime += datetime.timedelta(days=1)
+                else:
+                    previous_datetime = cpu_datetime
 
+                self.cpu_datetimes.append(cpu_datetime)
+        # self.cpu_datetimes = self.cpu_datetimes[:self.experiment_duration + 1]
+        self.user_cpu_utilization = cpu_df['%usr'] #[:self.experiment_duration + 1]
+        self.sys_cpu_utilization = cpu_df['%sys'] #[:self.experiment_duration + 1]
+        self.total_cpu_utilization = 100 - cpu_df['%idle'] #[:self.experiment_duration + 1]
+        # print(self.cpu_datetimes)
+        # print()
+        # print()
+
+    def get_experiment_start_datetime(self):
+        return self.cpu_datetimes[0]
     #############################################
     #########     CPU Temperatures    ###########
     #############################################
     def get_cpu_temperatures(self):
-        cpu_temp_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-TEMP.txt',
+        # cpu_temp_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-TEMP.txt',
+        cpu_temp_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-TEMP.txt',
                                   delimiter=',')
         cpu_temp_times = cpu_temp_df['Timestamp_ms']
         self.cpu_temp_datetimes = []
@@ -181,31 +219,45 @@ class AppFaultStatistics:
             self.cpu_temp_datetimes.append(cpu_temp_datetime)
             last_index += 1
         self.cpu_temperatures = cpu_temp_df['CPU_Temp'][first_index:last_index + 1]
+        # print("checking cpu temperature timestamps")
+        # print(self.cpu_temp_datetimes[0])
+        # print(self.cpu_temp_datetimes[len(self.cpu_temp_datetimes) - 1])
+        # print(self.cpu_temp_datetimes)
+
 
     #############################################
     #########     Latencies    ##################
     #############################################
     def get_latencies(self):
-        latencies_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-Latency.csv',
+        # latencies_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-Latency.csv',
+        latencies_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-Latency.csv',
                                    delimiter=',')
         request_times = latencies_df['request_received_time_ms']
         response_times = latencies_df['response_time_ms']
         self.compute_times = latencies_df['compute_time']
         self.transmission_times = latencies_df['transmission_time']
+        self.rtt = latencies_df['end_to_end_latency']
 
-        self.request_datetimes = []
+        self.request_received_datetimes = []
         self.response_datetimes = []
 
         for req, res in zip(request_times, response_times):
-            self.request_datetimes.append(get_datetime_from_timestamp(self.app, self.fault, req))
+            self.request_received_datetimes.append(get_datetime_from_timestamp(self.app, self.fault, req))
             self.response_datetimes.append(get_datetime_from_timestamp(self.app, self.fault, res))
+
+        print("checking latency timestamps")
+        print(self.request_received_datetimes[0])
+        print(self.request_received_datetimes[len(self.request_received_datetimes)-1])
+        # print(self.response_datetimes)
+        # print(len(self.response_datetimes))
 
     #############################################
     #########     Disk Utilization    ###########
     #############################################
     def get_iostat(self):
-        date = '2023-05-24 '
-        io_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-IO.txt', delimiter='\s+',
+        date = self.get_base_date()
+        # io_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-IO.txt', delimiter='\s+',
+        io_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-IO.txt', delimiter='\s+',
                             skiprows=3)
         self.io_datetimes = []
         self.disk_utilization = []  # %util
@@ -215,24 +267,39 @@ class AppFaultStatistics:
         first = True
         first_date = self.cpu_datetimes[0]
         last_date = self.cpu_datetimes[len(self.cpu_datetimes) - 1]
+        print('First Global Date {0}'.format(first_date))
+        print('Last Global Date {0}'.format(last_date))
+        previous_datetime = None
         for i in range(len(io_df)):
             if '/2023' in io_df.iloc[:, 0][i]:
                 io_time = io_df.iloc[:, 1][i]
-                io_datetime = datetime.datetime.strptime(date + io_time + ' PM', '%Y-%m-%d %I:%M:%S %p')
+                am_pm = io_df.iloc[:, 2][i]
+                io_datetime = datetime.datetime.strptime(date + io_time + ' ' + am_pm, '%Y-%m-%d %I:%M:%S %p')
                 io_datetime = io_datetime.replace(microsecond=0)
+                if previous_datetime is not None and previous_datetime.hour == 23 and io_datetime.hour == 0:
+                    io_datetime += datetime.timedelta(days=1)
+                else:
+                    previous_datetime = io_datetime
                 if io_datetime < first_date:
                     continue
                 if io_datetime > last_date:
                     break
                 if first:
-                    first_missing_date = io_datetime.replace(second=(io_datetime.second - 1))
+                    new_second = io_datetime.second - 1
+                    if new_second < 0:
+                        new_second = 59
+                    first_missing_date = io_datetime.replace(second=new_second)
                     if first_missing_date < first_date:
                         continue
                     self.io_datetimes.append(first_missing_date)
                     first = False
                 self.io_datetimes.append(io_datetime)
             elif io_df.iloc[:, 0][i] == 'mmcblk0':
-                self.disk_utilization.append(float(io_df.iloc[:, 22][i]))
+                if 'nano' in self.device:
+                    self.disk_utilization.append(float(io_df.iloc[:, 15][i]))
+                else:
+                    self.disk_utilization.append(float(io_df.iloc[:, 22][i]))
+        # print(self.io_datetimes)
 
     #############################################
     #########     NEtwork Utilizations    #######
@@ -240,7 +307,8 @@ class AppFaultStatistics:
     def get_network_statistics(self):
         date = self.get_base_date()
 
-        net_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-NET.txt',
+        # net_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-NET.txt',
+        net_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-NET.txt',
                              delimiter='\s+',
                              skiprows=2)
         self.net_datetimes = []
@@ -249,10 +317,16 @@ class AppFaultStatistics:
         self.net_transmit_rates = []  # txkB/s: The number of kilobytes transmitted per second
 
         last_date = self.cpu_datetimes[len(self.cpu_datetimes) - 1]
+        previous_datetime = None
         for i in range(len(net_df)):
             if net_df.iloc[:, 2][i] == 'wlan0':
                 net_time = net_df.iloc[:, 0][i]
-                net_datetime = datetime.datetime.strptime(date + net_time + ' PM', '%Y-%m-%d %I:%M:%S %p')
+                net_am_pm = net_df.iloc[:, 1][i]
+                net_datetime = datetime.datetime.strptime(date + net_time + ' ' + net_am_pm, '%Y-%m-%d %I:%M:%S %p')
+                if previous_datetime is not None and previous_datetime.hour == 23 and net_datetime.hour == 0:
+                    net_datetime += datetime.timedelta(days=1)
+                else:
+                    previous_datetime = net_datetime
                 if net_datetime > last_date:
                     break
                 self.net_datetimes.append(net_datetime)
@@ -279,17 +353,24 @@ class AppFaultStatistics:
     #############################################
     def get_memory_utilization(self):
         date = self.get_base_date()
-        mem_df = pd.read_csv('results_over_time/raspberrypi/' + self.app + '-' + self.fault + '-MEM.txt',
+        # mem_df = pd.read_csv('results_over_time_old/Python3.9Results/'+self.device+'/' + self.app + '-' + self.fault + '-MEM.txt',
+        mem_df = pd.read_csv('results_over_time_old/'+self.device+'/' + self.app + '-' + self.fault + '-MEM.txt',
                              delimiter='\s+', skiprows=2)
         mem_times = mem_df.iloc[:, 0]
+        mem_am_pm = mem_df.iloc[:, 1]
         self.mem_datetimes = []
-        for t in mem_times:
+        previous_datetime = None
+        for (t, am_pm) in zip(mem_times, mem_am_pm):
             if 'Average' not in t:
-                mem_datetime = datetime.datetime.strptime(date + t + ' PM', '%Y-%m-%d %I:%M:%S %p')
+                mem_datetime = datetime.datetime.strptime(date + t + ' ' + am_pm, '%Y-%m-%d %I:%M:%S %p')
+                if previous_datetime is not None and previous_datetime.hour == 23 and mem_datetime.hour == 0:
+                    mem_datetime += datetime.timedelta(days=1)
+                else:
+                    previous_datetime = mem_datetime
                 self.mem_datetimes.append(mem_datetime)
 
-        self.mem_utilization = mem_df['%memused'][:self.experiment_duration + 1]
-        self.mem_datetimes = self.mem_datetimes[:self.experiment_duration + 1]
+        self.mem_utilization = mem_df['%memused']#[:self.experiment_duration + 1]
+        # self.mem_datetimes = self.mem_datetimes[:self.experiment_duration + 1]
 
     ######################################################################################################################
     #################################     END: Reading Files      ########################################################
@@ -427,6 +508,17 @@ class AppFaultStatistics:
                      fontsize=16, fontweight='bold')
         plt.show()
 
+    def get_all_latencies(self):
+        return self.rtt, self.compute_times, self.transmission_times
+
+    def get_all_latencies_and_datetimes(self):
+        return self.request_received_datetimes, self.response_datetimes, self.rtt, self.compute_times, self.transmission_times
+
+    def get_all_fault_injection_start_stop_times(self):
+        fault_end_datetimes = [dt + datetime.timedelta(seconds=configs.FAULT_INJECTION_DURATION)
+                               for dt in self.fault_start_times]
+        return self.fault_start_times, fault_end_datetimes
+
     def get_resource_summary_matrix(self):
         summary_matrix = {}
 
@@ -453,20 +545,29 @@ class AppFaultStatistics:
                 summary_matrix[net_date].net_rec = net_rec
                 summary_matrix[net_date].net_tra = net_tra
 
-        for (response_datetime, compute_time, transmit_time) in \
-                zip(self.response_datetimes, self.compute_times, self.transmission_times):
-            if response_datetime.replace(microsecond=0) in summary_matrix.keys():
-                summary_matrix[response_datetime.replace(microsecond=0)].com_t = compute_time
-                summary_matrix[response_datetime.replace(microsecond=0)].tra_t = transmit_time
+        for (request_received_datetime, rtt, compute_time, transmit_time) in \
+                zip(self.request_received_datetimes, self.rtt, self.compute_times, self.transmission_times):
+            if request_received_datetime.replace(microsecond=0) in summary_matrix.keys():
+                summary_matrix[request_received_datetime.replace(microsecond=0)].com_t = compute_time
+                summary_matrix[request_received_datetime.replace(microsecond=0)].tra_t = transmit_time
+                summary_matrix[request_received_datetime.replace(microsecond=0)].rtt = rtt
 
         # Update fault labels according to injection times
-        fault_end_datetimes = [dt + datetime.timedelta(seconds=configs.FAULT_INJECTION_DURATION) for dt in self.fault_start_times]
+        fault_end_datetimes = [dt + datetime.timedelta(seconds=configs.FAULT_INJECTION_DURATION)
+                               for dt in self.fault_start_times]
+        # print(fault_start)
+        # print(self.fault_start_times)
+        # print(fault_end_datetimes)
+        # print()
         for (start_injection, end_injection) in zip(self.fault_start_times, fault_end_datetimes):
             # print('{0} - {1}'.format(start_injection, end_injection))
+            # print("---------------------------------------------------------")
             for key in summary_matrix.keys():
                 # print(key)
                 if start_injection <= key <= end_injection:
                     summary_matrix[key].label = self.fault
+                    # print("hereeeeeee")
+                    # print(self.fault)
             # print('-------------------------------')
 
 
@@ -487,8 +588,9 @@ class ResultSummary:
         self.disk = None
         self.net_rec = None
         self.net_tra = None
-        self.com_t = '-----'
-        self.tra_t = '-----'
+        self.com_t = -1
+        self.tra_t = -1
+        self.rtt = -1
         self.label = label
 
     def __str__(self):
@@ -507,50 +609,99 @@ class ResultSummary:
 
 
 class AppStatistics:
-    def __init__(self, app):
+    def __init__(self, app, device):
         super().__init__()
         self.app = app
+        self.device = device
         self.combine_statistics()
 
     def combine_statistics(self):
-        with open('results_over_time/raspberrypi/summary-'+self.app+'.csv', 'w', newline='') as file:
+        max_device_count = 3
+        # with open('results_over_time_old/Python3.9Results/summary-'+self.device+'-'+self.app+'.csv', 'w', newline='') as file:
+        with open('results_over_time_old/summary-'+self.device+'-'+self.app+'.csv', 'w', newline='') as file:
             writer = csv.writer(file)
             headers = ['Time', 'CPU_USER', 'CPU_SYS', 'CPU_TOT', 'CPU_TEMP', 'MEM', 'DISK', 'NET_REC', 'NET_TRA',
                        'COM_T', 'TRA_T', 'Label']
+            lable_dict = {'No-Fault': 0, 'CPU-20': 1, 'CPU-60': 2, 'CPU-90': 3, 'MEM-20%': 4, 'MEM-60%': 5,
+                          'MEM-90%': 6, 'IO-100': 7, 'PF-0': 8, 'CCHE-0': 9}
             writer.writerow(headers)
 
             # Write No Fault Results
-            app_no_fault_statistics = AppFaultStatistics(self.app, 'No-Fault')
-            summary_matrix = app_no_fault_statistics.get_resource_summary_matrix()
-            for key in summary_matrix.keys():
-                value = summary_matrix[key]
-                row = [key, value.cpu_user, value.cpu_sys,  ("%.2f" % value.cpu_tot)]
-                rest_row = [value.mem, value.disk, value.net_rec, value.net_tra, value.com_t, value.tra_t, value.label]
-                if value.cpu_temp!='-----':
-                    row.append("%.2f" % value.cpu_temp)
-                else:
-                    row.append('-')
-                row.extend(rest_row)
-                writer.writerow(row)
+            for device_number in range(max_device_count):
+                app_no_fault_statistics = AppFaultStatistics(self.device + str(device_number + 1), self.app, 'No-Fault')
+                print(f"Finished calling - app fault statistic no fault {self.device} {device_number} - {self.app}")
+                summary_matrix = app_no_fault_statistics.get_resource_summary_matrix()
+                for key in summary_matrix.keys():
+                    value = summary_matrix[key]
+                    row = [key, value.cpu_user, value.cpu_sys,  ("%.2f" % value.cpu_tot)]
+                    rest_row = [value.com_t, value.tra_t]
+                    if value.cpu_temp != '-----':
+                        row.append("%.2f" % value.cpu_temp)
+                    else:
+                        row.append(-1)
+                    if value.mem is None:
+                        row.append(-1)
+                    else:
+                        row.append(value.mem)
+                    if value.disk is None:
+                        row.append(-1)
+                    else:
+                        row.append(value.disk)
+                    if value.net_rec is None:
+                        row.append(-1)
+                    else:
+                        row.append(value.net_rec)
+                    if value.net_tra is None:
+                        row.append(-1)
+                    else:
+                        row.append(value.net_tra)
+                    row.extend(rest_row)
+                    row.extend([lable_dict[value.label]])
+                    writer.writerow(row)
+
+            faults = ['No-Fault', 'CPU-20', 'CPU-60', 'CPU-90', 'MEM-20%', 'MEM-60%', 'MEM-90%', 'IO-100', 'PF-0',
+                      'CCHE-0']
+            if self.device == 'nano':
+                faults = ['No-Fault', 'CPU-20', 'CPU-60', 'CPU-90', 'MEM-20%', 'MEM-60%', 'IO-100', 'PF-0', 'CCHE-0']
 
             # Write Faulty Results
-            for fault in configs.FAULTS:
-                for fault_config in fault.fault_config:
-                    print('{0}-{1}'.format(fault.abbreviation, fault_config))
-                    app_fault_statistics = AppFaultStatistics(self.app, '{0}-{1}'.format(fault.abbreviation,
-                                                                                         fault_config))
+            for fault in faults:
+                for device_number in range(max_device_count):
+                    if self.device == 'nano' and device_number == 1 and self.app == 'OD-CPU' and fault == 'MEM-60%':
+                        continue
+                    print(f'{self.device} {device_number} {self.app} -- {fault}')
+                    app_fault_statistics = AppFaultStatistics(self.device + str(device_number + 1), self.app, fault)
                     summary_matrix = app_fault_statistics.get_resource_summary_matrix()
                     for key in summary_matrix.keys():
                         value = summary_matrix[key]
                         row = [key, value.cpu_user, value.cpu_sys, ("%.2f" % value.cpu_tot)]
-                        rest_row = [value.mem, value.disk, value.net_rec, value.net_tra, value.com_t, value.tra_t,
-                                    value.label]
+                        rest_row = [value.com_t, value.tra_t]
                         if value.cpu_temp != '-----':
                             row.append("%.2f" % value.cpu_temp)
                         else:
-                            row.append('-')
+                            row.append(-1)
+                        if value.mem is None:
+                            row.append(-1)
+                        else:
+                            row.append(value.mem)
+                        if value.disk is None:
+                            row.append(-1)
+                        else:
+                            row.append(value.disk)
+                        if value.net_rec is None:
+                            row.append(-1)
+                        else:
+                            row.append(value.net_rec)
+                        if value.net_tra is None:
+                            row.append(-1)
+                        else:
+                            row.append(value.net_tra)
                         row.extend(rest_row)
+                        row.extend([lable_dict[value.label]])
                         writer.writerow(row)
+                #     break
+                # break
+
 
 
 
@@ -594,6 +745,16 @@ def get_fault_free_faulty_values(values, fault_start_indices, fault_end_indices)
 
 def get_datetime_from_timestamp(app, fault, timestamp):
     fault_start_time = datetime.datetime.fromtimestamp(timestamp / 1000)
+    new_hour = fault_start_time.hour - 3
+    if new_hour < 0:
+        new_hour = 24 + new_hour
+        fault_start_time -= datetime.timedelta(days=1)
+
+    fault_start_time = fault_start_time.replace(hour=new_hour)
+    # print(fault_start_time)
+    # print(fault_start_time)
+    # print("-------")
+    return fault_start_time
 
 def jitter(values):
     n = len(values)

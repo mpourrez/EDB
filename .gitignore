@@ -131,3 +131,22 @@ dmypy.json
 # file: ~/.gitignore_global
 .DS_Store
 .idea
+analytics/**/*.png
+analytics/
+workloads/
+results/
+*.png
+*.csv
+analytics/*.py
+results_over_time/
+results_over_time_old/
+*.json
+*.numbers
+
+# local/generated analysis files
+analytics/
+
+# local benchmark artifacts / large files
+benchmark_orchestrator/*.perf.data
+benchmark_orchestrator/experiment.txt
+benchmark_orchestrator/experiment.txt.pub

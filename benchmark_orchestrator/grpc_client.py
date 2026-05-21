@@ -51,7 +51,7 @@ class Client(object):
         message = pb2.MatrixMultiplicationRequest(matrix_1=grpc_matrix_1, matrix_2=grpc_matrix_2,
                                                   request_time_ms=request_time_ms)
         try:
-            result = self.micro_stub.multiply_matrices(message, timeout=20)
+            result = self.micro_stub.multiply_matrices(message, timeout=2000)
             print("[x] Received matrix multiplication result.")
             return result
         except:
@@ -159,6 +159,10 @@ class Client(object):
         message = pb2.EmptyProto()
         return self.edge_resource_management_stub.get_resource_logs(message)
 
+    def call_ping(self):
+        message = pb2.EmptyProto()
+        return self.edge_resource_management_stub.ping(message)
+
     # END RESOURCE MANAGEMENT CODES
 
     def call_image_processing(self):
@@ -242,4 +246,54 @@ class Client(object):
         result = self.application_stub.object_tracking(message)
         print("[x] Received result for object tracking")
         return result
+
+    def call_sentiment_aggregation(self, key, text, req_id, request_time_ms):
+        req = pb2.SentimentAggregationRequest(
+            key=key,
+            input_text=text,
+            req_id=req_id,
+            request_time_ms=request_time_ms,
+        )
+        return self.application_stub.sentiment_aggregation(req)
+
+    # ========= Replication-specific RPCs =========
+    def call_set_role_and_peers(self, role, peer_hosts):
+        """
+        Tell this replica whether it is PRIMARY or BACKUP,
+        and pass the list of peer hosts.
+        """
+        req = pb2.SetRoleAndPeersRequest(role=role, peer_hosts=peer_hosts)
+        return self.application_stub.set_role_and_peers(req)
+
+    def call_set_checkpoint_period(self, seconds):
+        """
+        Set periodic checkpoint interval on the primary.
+        """
+        req = pb2.SetCheckpointPeriodRequest(seconds=seconds)
+        return self.application_stub.set_checkpoint_period(req)
+
+    def call_get_checkpoint(self):
+        """
+        Ask this replica (primary) for its latest checkpoint snapshot.
+        """
+        req = pb2.EmptyProto()
+        return self.application_stub.get_checkpoint(req)
+
+    def call_apply_checkpoint(self, version, last_op_id, snapshot_json):
+        """
+        Push a checkpoint snapshot into this replica (backup).
+        """
+        req = pb2.CheckpointRequest(
+            version=version,
+            last_op_id=last_op_id,
+            snapshot_json=snapshot_json
+        )
+        return self.application_stub.apply_checkpoint(req)
+
+    def call_get_current_version(self, key="topicA"):
+        """
+        Query the state version on this replica (used for freshness / lag).
+        """
+        req = pb2.VersionRequest(key=key)
+        return self.application_stub.get_current_version(req)
 

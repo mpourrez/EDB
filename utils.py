@@ -30,6 +30,22 @@ image_files = None
 audio_files = None
 script_dir = None
 
+_SENTENCES = [
+    "I love this camera, it works great!",
+    "The battery life is terrible.",
+    "Picture quality is amazing but autofocus is slow.",
+    "Not worth the price.",
+    "Absolutely fantastic, would buy again.",
+    "It’s okay, but I expected more.",
+    "The product stopped working after a week.",
+    "Customer service was very helpful.",
+    "The design is sleek and modern.",
+    "Performance is fast and reliable."
+]
+
+def random_sentence():
+    return random.choice(_SENTENCES)
+
 
 def initial_workload_setup():
     global audio_files, image_files, num_lines_in_sentiment_dataset, audio_alignment_metadata_df, script_dir
@@ -139,6 +155,7 @@ def send_random_audio_text_in_chunks():
 
 
 def get_avg_without_outlier(data_list):
+    # return sum(data_list) / len(data_list)
     if np.std(data_list) == 0:
         return sum(data_list) / len(data_list)
     z = np.abs(stats.zscore(data_list))
@@ -150,10 +167,14 @@ def get_avg_without_outlier(data_list):
             count += 1
         else:
             print("This is outlier: {}".format(data_list[i]))
+    if count == 0:
+        return 0
     return avg / count
 
 
 def get_std_without_outlier(data_list):
+    if len(data_list) == 0:
+        return 0
     if np.std(data_list) == 0:
         return sum(data_list) / len(data_list)
     z = np.abs(stats.zscore(data_list))
