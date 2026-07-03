@@ -85,21 +85,44 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
         return pb2.EmptyProto()
 
     def get_resource_utilization(self, request, context):
-        # Stop the power measurement thread and get the average power consumption
-        self.power_thread.stop()
-        self.power_thread.join()
-        # Stop the resource utilization thread and get the average values
-        self.resource_thread.stop()
-        self.resource_thread.join()
-        # Send a signal to the stress process to terminate it
-        if self.fault_injection_process:
-            os.kill(self.fault_injection_process.pid, signal.SIGTERM)
+        # Legacy averaging path: stop the tracer threads spun up by
+        # start_resource_tracing and return the aggregate. Null-guarded so a
+        # premature call (no prior start_resource_tracing) returns zeros
+        # instead of AttributeError — the EDGE_AWARE headroom loop should
+        # use get_resource_snapshot() below, which is non-destructive.
+        avg_power = 0.0
+        avg_cpu_utilization = 0.0
+        avg_memory_utilization = 0.0
+        avg_disk_utilization = 0.0
+        avg_network_received_speed = 0.0
+        avg_network_transmitted_speed = 0.0
 
-        avg_power = self.power_thread.get_average_power()
-        avg_cpu_utilization = self.resource_thread.get_average_cpu_utilization()
-        avg_memory_utilization = self.resource_thread.get_average_memory_utilization()
-        avg_disk_utilization = self.resource_thread.get_average_disk_utilization()
-        avg_network_received_speed, avg_network_transmitted_speed = self.resource_thread.get_average_network_utilization()
+        if self.power_thread is not None:
+            try:
+                self.power_thread.stop()
+                self.power_thread.join()
+                avg_power = self.power_thread.get_average_power()
+            except Exception as e:
+                print(f"[!] get_resource_utilization: power_thread teardown: {e}")
+        if self.resource_thread is not None:
+            try:
+                self.resource_thread.stop()
+                self.resource_thread.join()
+                avg_cpu_utilization = self.resource_thread.get_average_cpu_utilization()
+                avg_memory_utilization = self.resource_thread.get_average_memory_utilization()
+                avg_disk_utilization = self.resource_thread.get_average_disk_utilization()
+                avg_network_received_speed, avg_network_transmitted_speed = \
+                    self.resource_thread.get_average_network_utilization()
+            except Exception as e:
+                print(f"[!] get_resource_utilization: resource_thread teardown: {e}")
+        # Legacy behavior kept: the aggregate RPC also terminates any in-flight
+        # stress process. Non-destructive callers must use get_resource_snapshot.
+        if self.fault_injection_process is not None:
+            try:
+                os.kill(self.fault_injection_process.pid, signal.SIGTERM)
+            except Exception:
+                pass
+
         resource_utilization_response = pb2.ResourceUtilizationResponse()
         resource_utilization_response.average_cpu_utilization = avg_cpu_utilization
         resource_utilization_response.average_memory_utilization = avg_memory_utilization
@@ -108,6 +131,41 @@ class EdgeResourceManagementGRPCService(pb2_grpc.EdgeResourceManagementServicer)
         resource_utilization_response.average_network_transmitted_speed = avg_network_transmitted_speed
         resource_utilization_response.average_power_consumption = avg_power
         return resource_utilization_response
+
+    def get_resource_snapshot(self, request, context):
+        """Instantaneous, non-destructive utilization sample.
+
+        Uses psutil directly so it does not depend on start_resource_tracing
+        and does not stop tracer threads or kill fault-injection processes.
+        This is the RPC the EDGE_AWARE headroom loop polls.
+        """
+        resp = pb2.ResourceUtilizationResponse()
+        # Sample net_io + CPU over the same ~150 ms window: psutil.cpu_percent
+        # with a positive interval blocks for that duration and returns a real
+        # delta (interval=None returns 0.0 on the first call, which would
+        # falsely look like full CPU headroom and skew the first rebalance).
+        try:
+            n0 = psutil.net_io_counters()
+            cpu = float(psutil.cpu_percent(interval=0.15))
+            n1 = psutil.net_io_counters()
+            dt = 0.15
+            resp.average_cpu_utilization = cpu
+            resp.average_network_received_speed = float(max(0, (n1.bytes_recv - n0.bytes_recv) / dt))
+            resp.average_network_transmitted_speed = float(max(0, (n1.bytes_sent - n0.bytes_sent) / dt))
+        except Exception:
+            resp.average_cpu_utilization = 0.0
+            resp.average_network_received_speed = 0.0
+            resp.average_network_transmitted_speed = 0.0
+        try:
+            resp.average_memory_utilization = float(psutil.virtual_memory().percent)
+        except Exception:
+            resp.average_memory_utilization = 0.0
+        try:
+            resp.average_disk_utilization = float(psutil.disk_usage("/").percent)
+        except Exception:
+            resp.average_disk_utilization = 0.0
+        resp.average_power_consumption = 0.0
+        return resp
 
     def get_fault_injection_status(self, request, context):
         if self.fault_injection_process is None:

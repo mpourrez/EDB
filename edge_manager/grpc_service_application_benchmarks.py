@@ -146,3 +146,4 @@ class ApplicationBenchmarksGRPCService(pb2_grpc.ApplicationBenchmarksServicer):
         if self._resolve_app(request) == "SLAM-VF":
             return slam_vf.rpc_apply_log_tail(request, context)
         return stateful_sentiment_aggregator.rpc_apply_log_tail(request, context)
+

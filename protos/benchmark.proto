@@ -45,6 +45,11 @@ service EdgeResourceManagement{
   rpc start_resource_tracing(EmptyProto) returns (EmptyProto) {}
   rpc start_resource_tracing_and_saving(ResourceTracingRequest) returns (EmptyProto) {}
   rpc get_resource_utilization(EmptyProto) returns (ResourceUtilizationResponse) {}
+  // Non-destructive, on-demand utilization sample. Unlike get_resource_utilization
+  // this does not require a prior start_resource_tracing, does not stop any
+  // tracer threads, and does not kill running fault-injection processes — safe
+  // to poll continuously (used by the EDGE_AWARE headroom loop).
+  rpc get_resource_snapshot(EmptyProto) returns (ResourceUtilizationResponse) {}
   rpc get_fault_injection_status(EmptyProto) returns (ProcessStatus) {}
   rpc get_resource_tracing_status(EmptyProto) returns (ProcessStatus) {}
   rpc inject_fault(FaultRequest) returns (EmptyProto) {}
