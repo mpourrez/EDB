@@ -37,7 +37,12 @@ class SentimentAggregator:
     def __init__(self):
         self.lock = threading.RLock()
         self.state = {}        # key -> {window, polarity, subjectivity}
+        # ``version`` is the current_state_version (monotonic update counter).
+        # ``last_checkpoint_version`` is the version captured by the most
+        # recent to_snapshot() call. Together they let the orchestrator
+        # decide between FULL and INCREMENTAL recovery transfers.
         self.version = 0
+        self.last_checkpoint_version = 0
         self.last_op_id = ""
         self.req_history = {}  # key -> deque of last MAX_REQ_IDS
 
@@ -77,12 +82,22 @@ class SentimentAggregator:
             self.last_op_id = req_id
             return self.state[key]["polarity"], self.state[key]["subjectivity"], self.version, True
 
-    def to_snapshot(self):
-        """Return an in-memory checkpoint snapshot (no file I/O)."""
+    def to_snapshot(self, key=""):
+        """Return an in-memory checkpoint snapshot (no file I/O).
+
+        Logical-API alias: ``get_state_snapshot(key)`` — exposed over gRPC as
+        ``ApplicationBenchmarks.get_checkpoint(VersionRequest{app, key})``.
+        """
         with self.lock:
             snap = pb2.CheckpointSnapshot()
+            snap.app = "SA-AGG"
+            snap.key = key or ""
             snap.version = self.version
             snap.last_op_id = self.last_op_id
+            # Stamp the checkpoint watermark so an incremental recovery caller
+            # can decide whether a log-tail transfer is needed (SA-AGG has no
+            # log model, so the orchestrator collapses to a full transfer).
+            self.last_checkpoint_version = int(self.version)
             for k, v in self.state.items():
                 entry = pb2.CheckpointSnapshot.Entry(
                     polarity=v["polarity"],
@@ -96,9 +111,14 @@ class SentimentAggregator:
             return snap
 
     def apply_snapshot(self, snap: pb2.CheckpointSnapshot):
-        """Install a snapshot into local state."""
+        """Install a snapshot into local state.
+
+        Logical-API alias: ``apply_state_snapshot(key, snap)`` — exposed over
+        gRPC as ``ApplicationBenchmarks.apply_checkpoint(CheckpointSnapshot)``.
+        """
         with self.lock:
             self.version = snap.version
+            self.last_checkpoint_version = int(snap.version)
             self.last_op_id = snap.last_op_id
             self.state = {}
             for k, entry in snap.state.items():
@@ -171,7 +191,7 @@ def _push_checkpoint_loop():
         # Primary only
         if ROLE != pb2.ROLE_PRIMARY:
             continue
-        snap = aggregator.to_snapshot()
+        snap = aggregator.to_snapshot(key="")
         # (optional) also persist locally for crash restart
         aggregator.checkpoint_to_disk()
         # Push to all peers
@@ -208,7 +228,7 @@ def rpc_set_checkpoint_period(request, context):
 
 def rpc_get_checkpoint(request, context):
     """EdgeService.GetCheckpoint"""
-    return aggregator.to_snapshot()
+    return aggregator.to_snapshot(key=getattr(request, "key", ""))
 
 def rpc_apply_checkpoint(request, context):
     """EdgeService.ApplyCheckpoint (backup side)"""
@@ -234,4 +254,22 @@ def analyze_sentiment_stateful(request, request_received_time_ms):
     return resp
 
 def get_current_version(request, context):
-    return pb2.VersionResponse(key=request.key, state_version=aggregator.version)
+    resp = pb2.VersionResponse(key=request.key, state_version=aggregator.version)
+    resp.app = "SA-AGG"
+    return resp
+
+
+def rpc_get_log_tail(request, context):
+    """SA-AGG has no incremental log model in this codebase — return empty.
+
+    Callers that want incremental recovery for SA-AGG should fall back to a
+    full snapshot transfer.
+    """
+    return pb2.LogTail(app="SA-AGG", key=getattr(request, "key", ""),
+                       from_version=int(getattr(request, "since_version", 0)),
+                       to_version=int(getattr(request, "since_version", 0)))
+
+
+def rpc_apply_log_tail(request, context):
+    """SA-AGG ignores log tails. Acknowledge so callers stay generic."""
+    return pb2.Ack(ok=True, msg="sa-agg log_tail ignored (no incremental log)")
