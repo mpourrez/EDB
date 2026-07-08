@@ -23,6 +23,10 @@ logging.basicConfig(
 CHECKPOINT_FILE = "sentiment_state.json"
 WINDOW_SIZE = 50
 MAX_REQ_IDS = 5000
+# Bounded operation-log tail retained for INCREMENTAL recovery. Each entry is
+# a compact, already-scored update (no raw input text). Sized so it comfortably
+# covers the ops accumulated between two checkpoint watermarks.
+MAX_LOG_TAIL = 5000
 
 # ===== Runtime config set via RPCs =====
 ROLE = pb2.ROLE_BACKUP           # default
@@ -45,6 +49,11 @@ class SentimentAggregator:
         self.last_checkpoint_version = 0
         self.last_op_id = ""
         self.req_history = {}  # key -> deque of last MAX_REQ_IDS
+        # Bounded operation-log tail for INCREMENTAL recovery.
+        # Each entry: (version, key, req_id, polarity, subjectivity) where
+        # (polarity, subjectivity) are the per-update TextBlob scores — never
+        # the raw input text — so a stale replica can replay them cheaply.
+        self.log_tail = deque(maxlen=MAX_LOG_TAIL)
 
     def _score_text(self, text: str):
         blob = TextBlob(text)
@@ -80,7 +89,92 @@ class SentimentAggregator:
 
             self.version += 1
             self.last_op_id = req_id
+            # Record the applied op in the log tail (only on applied=True, i.e.
+            # a genuinely new req_id) so it can be replayed after a checkpoint.
+            # Store the already-computed (p, s) — not the raw text.
+            self.log_tail.append((self.version, key, req_id, p, s))
             return self.state[key]["polarity"], self.state[key]["subjectivity"], self.version, True
+
+    def _apply_scored_update(self, key, req_id, polarity, subjectivity, version):
+        """Replay one already-scored update onto local state (caller holds lock).
+
+        Mirrors the state math in update() but consumes pre-computed
+        (polarity, subjectivity) instead of re-running TextBlob, so recovery
+        never needs the raw input text. Returns True if applied, False if the
+        req_id was already seen for this key (idempotent skip). Advances
+        self.version to ``version`` on apply and appends to the local log tail
+        so a recovered replica can itself serve get_log_tail().
+        """
+        if key not in self.req_history:
+            self.req_history[key] = deque(maxlen=MAX_REQ_IDS)
+        if req_id and req_id in self.req_history[key]:
+            return False
+        if req_id:
+            self.req_history[key].append(req_id)
+        if key not in self.state:
+            self.state[key] = {
+                "window": deque(maxlen=WINDOW_SIZE),
+                "polarity": 0.0,
+                "subjectivity": 0.0
+            }
+        w = self.state[key]["window"]
+        w.append((polarity, subjectivity))
+        self.state[key]["polarity"] = sum(pp for pp, _ in w) / len(w)
+        self.state[key]["subjectivity"] = sum(ss for _, ss in w) / len(w)
+        self.version = int(version)
+        self.last_op_id = req_id
+        self.log_tail.append((int(version), key, req_id,
+                              float(polarity), float(subjectivity)))
+        return True
+
+    def get_log_tail(self, since_version):
+        """Return log entries with version > since_version, oldest first.
+
+        Returns ``(entries, oldest_retained, current_version)`` where
+        ``oldest_retained`` is the version of the oldest entry still held in
+        the bounded log (or None if the log is empty). The caller uses these
+        to detect a gap: if ``since_version`` predates ``oldest_retained`` some
+        ops have been evicted and the caller must fall back to FULL recovery.
+        """
+        with self.lock:
+            since = int(since_version)
+            entries = [e for e in self.log_tail if e[0] > since]
+            oldest = int(self.log_tail[0][0]) if self.log_tail else None
+            return entries, oldest, int(self.version)
+
+    def apply_log_tail(self, entries):
+        """Replay scored update entries onto local state, idempotently.
+
+        ``entries`` is an iterable of pb2.SAAGGLogEntry (fields version/key/
+        req_id/polarity/subjectivity). Entries are sorted by version before
+        applying; those with version <= current self.version are skipped, and
+        duplicate req_ids are skipped. Never decreases self.version. Returns
+        ``(applied, skipped, final_version)``.
+        """
+        applied = 0
+        skipped = 0
+        with self.lock:
+            ordered = sorted(entries, key=lambda e: int(e.version))
+            for e in ordered:
+                ver = int(e.version)
+                if ver <= self.version:
+                    # Already reflected in local state (or a re-applied tail).
+                    skipped += 1
+                    continue
+                if ver > self.version + 1:
+                    logging.warning(
+                        f"SA_LOG_TAIL_GAP key={e.key} expected={self.version + 1} "
+                        f"got={ver} (replaying anyway, state may drift)"
+                    )
+                ok = self._apply_scored_update(
+                    e.key, e.req_id, float(e.polarity),
+                    float(e.subjectivity), ver
+                )
+                if ok:
+                    applied += 1
+                else:
+                    skipped += 1
+            return applied, skipped, int(self.version)
 
     def to_snapshot(self, key=""):
         """Return an in-memory checkpoint snapshot (no file I/O).
@@ -121,6 +215,13 @@ class SentimentAggregator:
             self.last_checkpoint_version = int(snap.version)
             self.last_op_id = snap.last_op_id
             self.state = {}
+            # Reset idempotency + log tail: pre-checkpoint req_ids and log
+            # entries are stale after installing a snapshot. The version
+            # watermark (self.version) prevents any pre-snapshot op from being
+            # replayed, and the next entries appended will be the ones we
+            # replay during incremental recovery (or fresh updates).
+            self.req_history = {}
+            self.log_tail = deque(maxlen=MAX_LOG_TAIL)
             for k, entry in snap.state.items():
                 window = deque(maxlen=WINDOW_SIZE)
                 # Rebuild window pairs
@@ -260,16 +361,56 @@ def get_current_version(request, context):
 
 
 def rpc_get_log_tail(request, context):
-    """SA-AGG has no incremental log model in this codebase — return empty.
+    """Server-side get_log_tail for SA-AGG.
 
-    Callers that want incremental recovery for SA-AGG should fall back to a
-    full snapshot transfer.
+    Returns the operation-log tail with ``version > request.since_version`` as
+    pb2.SAAGGLogEntry records. If the requested watermark predates the oldest
+    entry still retained in the bounded log, some ops have been evicted and the
+    caller must fall back to FULL recovery (signalled via SA_LOG_TAIL_MISS).
     """
-    return pb2.LogTail(app="SA-AGG", key=getattr(request, "key", ""),
-                       from_version=int(getattr(request, "since_version", 0)),
-                       to_version=int(getattr(request, "since_version", 0)))
+    key = getattr(request, "key", "") or ""
+    since = int(getattr(request, "since_version", 0))
+    entries, oldest, current = aggregator.get_log_tail(since)
+
+    lt = pb2.LogTail()
+    lt.app = "SA-AGG"
+    lt.key = key
+    lt.from_version = since
+    lt.to_version = entries[-1][0] if entries else since
+    for (ver, k, rid, pol, subj) in entries:
+        e = lt.sa_entries.add()
+        e.version = int(ver)
+        e.key = k
+        e.req_id = rid
+        e.polarity = float(pol)
+        e.subjectivity = float(subj)
+
+    # Gap detection: we can only serve ops we still retain. A gap exists when
+    # the oldest retained entry is newer than since+1, or the log is empty yet
+    # our version is ahead of `since` (nothing left to replay the delta).
+    miss = ((oldest is not None and oldest > since + 1) or
+            (oldest is None and current > since))
+    if miss:
+        logging.warning(
+            f"SA_LOG_TAIL_MISS since={since} oldest_retained={oldest} "
+            f"current_version={current} count={len(entries)} "
+            f"-> caller should fall back to FULL recovery"
+        )
+    else:
+        logging.info(
+            f"SA_LOG_TAIL_GET since={since} count={len(entries)} "
+            f"from_version={lt.from_version} to_version={lt.to_version}"
+        )
+    return lt
 
 
 def rpc_apply_log_tail(request, context):
-    """SA-AGG ignores log tails. Acknowledge so callers stay generic."""
-    return pb2.Ack(ok=True, msg="sa-agg log_tail ignored (no incremental log)")
+    """Server-side apply_log_tail for SA-AGG (backup / recovering side)."""
+    applied, skipped, final_v = aggregator.apply_log_tail(request.sa_entries)
+    logging.info(
+        f"SA_LOG_TAIL_APPLY applied={applied} skipped={skipped} "
+        f"final_version={final_v}"
+    )
+    return pb2.Ack(ok=True,
+                   msg=f"sa-agg log_tail applied={applied} skipped={skipped} "
+                       f"version={final_v}")

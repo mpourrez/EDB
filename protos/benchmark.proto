@@ -391,6 +391,16 @@ message SLAMFrameLogEntry {
   float pose_theta = 10;
 }
 
+// Compact per-update log entry used for SA-AGG incremental recovery.
+// Carries the already-scored polarity/subjectivity — never the raw input text.
+message SAAGGLogEntry {
+  int64 version = 1;       // state version after this update
+  string key = 2;          // aggregator key
+  string req_id = 3;       // idempotency token
+  double polarity = 4;     // per-update polarity scored by TextBlob (-1..+1)
+  double subjectivity = 5; // per-update subjectivity scored by TextBlob (0..1)
+}
+
 message LogTailRequest {
   string app = 1;            // "SLAM-VF" | "SA-AGG"
   string key = 2;            // SLAM-VF: session id; SA-AGG: aggregator key
@@ -403,6 +413,7 @@ message LogTail {
   int64 from_version = 3;   // exclusive lower bound (snapshot's version)
   int64 to_version = 4;     // inclusive upper bound (last entry's version)
   repeated SLAMFrameLogEntry slam_entries = 5;
+  repeated SAAGGLogEntry sa_entries = 6;
 }
 
 message CheckpointSnapshot {
